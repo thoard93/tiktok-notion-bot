@@ -1,0 +1,714 @@
+import os
+import json
+import asyncio
+import base64
+import httpx
+from datetime import datetime, timedelta
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import anthropic
+import random
+
+# Configuration
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
+NOTION_DATABASE_ID = "26d2b61d-84d1-81b2-ae72-000b4d514a51"  # Chelsea's data source
+
+# This will be populated dynamically from Notion
+CHELSEA_PRODUCTS = []
+NEW_SAMPLE_PRODUCTS = []
+
+# Hardcoded fallback list (used if Notion fetch fails)
+FALLBACK_PRODUCTS = [
+    "Physicians Choice bundle", "Calm Magnesium Gummies", "Spylt Protein Milk", 
+    "Carnivore Electrolytes", "Peach Slices", "Flexi Shower Cap", "Medicube Kojic Acid",
+    "Lemme Tone Gummies", "Rice Toner", "Cat Litter Deodorizer", "Colourpop X Shrek Palette",
+    "Turkesterone", "Beplain Mung Bean Set", "Color Wow Dreamcoat", "Pure Peak Thyroid",
+    "Sttes Perfume - Sunshine", "Choco Musk", "GNC NMN", "GNC 40+ Vitapak", "GNC Mega Men 40+",
+    "Glow recipe skincare bundle", "Laura Gellar coverage concealer", "Kitsch x Grinch Hair Perfume",
+    "Gopure Firming Cream", "Arterra Dog Multivitamin", "Probioderm Skincare set", "Oxygreens",
+    "Yak Cheese", "Honest Chew Toy", "Cubby Litter Box", "SuperBeets", "Boka toothpaste 3pack",
+    "Unbrush Hair Brush", "R+CO badlands Dry Shampoo", "dog wishbone trio", "suavecito pomade",
+    "Buttah skincare set", "Hair miracle leave-in", "Konjac Jelly", "Longwear Lip Liner",
+    "Redness Reform", "Niagen NAD+", "Kitsch vanilla hair perfume", "Iris electronics bags",
+    "Charcoal whitener powder", "Round Lab sun cushion", "bye bye bloat", "period cramp relief gummies",
+    "Car jump starter", "High roller ingrown tonic", "REVO smart cupper device", "ANANKE snapback hat",
+    "Leisure hydration lemonade", "EZ bombs Tingabomb", "MAKE Luminous eyeshadow", "Prequel quench duo",
+    "Dr melaxin Non-eyebag duo", "Resetting mineral powder", "Mask fit setting spray",
+    "Wavytalk cool curl styler", "Disney Princess tumbler", "Bluey cookbook", "Glutathione Direct",
+    "Liquid IV Variety", "Swish Mouthwash", "Cat Pheromone Diffuser", "Topicals Hair Roller",
+    "iris steel necklace", "Glow trio glass skin set", "refresh intimate body wash", "PHlush stick",
+    "Nutricost Creatine", "Hims wrinkle set", "Holiday Dr Squatch", "Dr Squatch Cologne + LIp balm set",
+    "R&W Carpet Shampoo", "EYE-con Essentials Trio", "Rice water ultimate makeup trio",
+    "Clinique honey lip & eye bundle", "Sage kids water bottle - Stitch", "Salt & stone scent duo",
+    "REJURAN ampoule PDRN", "Do or Drink: Party card game", "Holiday lash essentials",
+    "Mini blush set - Patrick Ta beauty", "Neutrogena Tate hydration set", "Lactic acid foaming body polish",
+    "Cinnamon cow warmies", "Tula's cult classic bundle", "Kahi eye balm brightener stick",
+    "Cata-kor for hair skin nails", "Zak Water Bottle", "Clean skin holiday towels XL",
+    "its a 10 haircare miracle blow dry", "Bloom curve sculpt pack", "MAELYS belly firming cream",
+    "Vitauthority bone broth", "Mixsoon full care set", "Embers + Haze mini eyeshadow",
+    "Bask & Lather ultimate growth set", "Glow recipe cheek & lip kit", "Colorgram blurry lip duo",
+    "Burst oral probiotic", "MAKE perfect blend bundle", "Bloom Creatine monohydrate",
+    "Tirtir BDRN brightening eye set", "PHLUR whipped berry perfume duo", "Blush & bake puff set",
+    "Laneige glaze lip duo", "Scrubzz Bathing Wipes", "Lume Whole Body Deo", "Iris Backpack",
+    "Grateful Earth Mushroom Coffee", "LOVE CORN Variety Pack", "Coconu Massage Oil",
+    "Leefar Feminine Probiotics", "Colorgram Fruity Glass Tint", "MOSH Protein Bars",
+    "Hims Goodnight Wrinkle Cream", "VEV 14-in-1 Magnesium", "Kitsch Dermaplaners",
+    "Hims Thick Fix Shampoo + Conditioner", "PAGEVINE Rotating Eyeliner Stamp Pen",
+    "SKIN1004 Poremizing Clay Mask", "Grateful Earth Coconut + Turmeric",
+    "Joyspring Kids Bundle (Lingo Leap + Calmity)", "Legion Whey+ Protein", "Ayoh Foods Starter Pack",
+    "Mouthology Toothpaste", "Beam Dream Pumpkin Spiced Cocoa", "Beam Dream Nighttime Cocoa",
+    "TryBello Hair Helper Spray", "BOLDIFY Hairline Powder Sample Kit", "All Day Complexion Set",
+    "Anker Nano Power Bank", "MOSH Raspberry White Chocolate", "Prequel HALF and HALF",
+    "burst expanding dental floss", "Dr Melaxin Blowout Routine Set", "Rainbow Light Men's Multi",
+    "Salud Cucumber Lime", "Lemme Purr Gummies", "Davids Starter kit - Hydroxi Whitening",
+    "Artnaturals Magnesium oil Spray", "PowderPal Multipurpose Scoop", "Beamach Toothpaste",
+    "Natural Digestive Support Capsules", "Liposomal Glutathione", "Tokyo Mega Live Exclusive Bundle",
+    "Zak Steel Tumbler", "Ranch Fuel Energy Drinks", "Nature's Sunshine Lymphatic Drainage Supplement",
+    "Sungboon Serum + Retinol cream", "GHOST Greens Powder", "Nooni Korean Apple Lip Taint",
+    "Hand Warmers", "Mighty Paws Chicken Jerky", "STASIS Day & Night Set", "Viking Revolution 8 Pack",
+    "Wake Up Water", "VEV D3K2", "NTONPOWER Strip", "Sunny health Ab Cruncher", "6 Pack RopeRoller",
+    "Feminine Freshness Bundle", "multipeptide Serum for Hair Density", "Extra Strength Rosemary Fenugreek",
+    "Viking Revolution Beard Filling Pen", "Gurunanda Whitening Strips", "Rinseroo Tub Sprayer",
+    "NTONPOWER Travel Strip", "Naked Neroli", "MicroIngredients NMN Complex", "AD Life Gut Detox",
+    "vita 3 serum 2 pack", "Waterproof Mattress Protector", "Neuro Sugar Free", "Clear 3 Skin Support",
+    "Natural Tallow Deoderant", "Be Amazing Vegan Protein", "Optimum Nutrition Whey Protein",
+    "Tress complete waxing kit", "Black Forest Cocoa Flavanols", "The Ordinary Discovery Set",
+    "Overthinker's Book", "Far Out Five Set", "Nutricost Turkesterone", "MOSH Cookie Dough Crunch",
+    "Goat Milk Brutus Broth", "LeBanta Oil", "Peak Revival Muscle Stack", "RoC Skincare Multi Correxion",
+    "Centella deep cleanse & pore set", "ALODERMA Aloe Vera Gel", "SACHEU All Day DUO",
+    "SACHEU Lip STAY-N TRIO", "Retinal Sandwich Duo", "Holiday RED-Y OR NOT DUO",
+    "Pout Preserve Party of 4", "COSRX Vitamin c lip plump", "Clocky Alarm Clock",
+    "Freezball dog chew bone", "BLANC Cover cream stick", "Solaray Vitamin D3+K2",
+    "COSRX Vitamin C toner", "Herbalista hair care bundle", "Embarouge luxe Parfum",
+    "Healfast Scar Gel", "Cure Hydration Mix", "Alpha Grillers Meat Thermometer",
+    "Moonforest Tapioca Cat Litter", "URO Metabolism"
+]
+
+# TikTok accounts in priority order
+TIKTOK_ACCOUNTS = ["Gymgoer1993", "Dealrush93", "Datburgershop93"]
+
+# Session storage for collecting screenshots
+user_sessions = {}
+
+
+async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
+    """Fetch all unique products from Notion and identify New Sample products"""
+    global CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
+    
+    all_products = set()
+    new_samples = set()
+    
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "Authorization": f"Bearer {NOTION_API_KEY}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28"
+        }
+        
+        # First, get all available product options from the database schema
+        response = await client.get(
+            f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}",
+            headers=headers
+        )
+        
+        if response.status_code == 200:
+            db_data = response.json()
+            products_schema = db_data.get("properties", {}).get("Products", {})
+            if products_schema.get("type") == "multi_select":
+                for option in products_schema.get("multi_select", {}).get("options", []):
+                    all_products.add(option.get("name"))
+        
+        # Now query the database to find which products are marked as New Sample
+        has_more = True
+        start_cursor = None
+        
+        while has_more:
+            body = {
+                "page_size": 100,
+                "filter": {
+                    "property": "New Sample",
+                    "checkbox": {
+                        "equals": True
+                    }
+                }
+            }
+            if start_cursor:
+                body["start_cursor"] = start_cursor
+            
+            response = await client.post(
+                f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query",
+                headers=headers,
+                json=body
+            )
+            
+            if response.status_code != 200:
+                print(f"Error fetching from Notion: {response.text}")
+                break
+            
+            data = response.json()
+            
+            for page in data.get("results", []):
+                props = page.get("properties", {})
+                
+                # Get products from multi-select for New Sample entries
+                products_prop = props.get("Products", {})
+                if products_prop.get("type") == "multi_select":
+                    for item in products_prop.get("multi_select", []):
+                        product_name = item.get("name")
+                        if product_name:
+                            new_samples.add(product_name)
+            
+            has_more = data.get("has_more", False)
+            start_cursor = data.get("next_cursor")
+    
+    CHELSEA_PRODUCTS = list(all_products)
+    NEW_SAMPLE_PRODUCTS = list(new_samples)
+    
+    print(f"Loaded {len(CHELSEA_PRODUCTS)} products, {len(NEW_SAMPLE_PRODUCTS)} are new samples")
+    return CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
+
+
+class NotionClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.notion.com/v1"
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28"
+        }
+    
+    async def create_page(self, product: str, video_style: str, account: str, due_date: str, is_new_sample: bool = False):
+        """Create a single page in the Notion database"""
+        async with httpx.AsyncClient() as client:
+            data = {
+                "parent": {"database_id": NOTION_DATABASE_ID},
+                "properties": {
+                    "Amount of vids": {
+                        "title": [{"text": {"content": "1"}}]
+                    },
+                    "Creator": {
+                        "select": {"name": "Chelsea"}
+                    },
+                    "Products": {
+                        "multi_select": [{"name": product}]
+                    },
+                    "Video Style": {
+                        "select": {"name": video_style}
+                    },
+                    "TikTok Account": {
+                        "select": {"name": account}
+                    },
+                    "Status": {
+                        "status": {"name": "Not Started"}
+                    },
+                    "Due Date": {
+                        "date": {"start": due_date}
+                    },
+                    "New Sample": {
+                        "checkbox": is_new_sample
+                    }
+                }
+            }
+            
+            response = await client.post(
+                f"{self.base_url}/pages",
+                headers=self.headers,
+                json=data
+            )
+            return response.status_code == 200
+
+
+async def process_screenshots_with_claude(screenshots: list[bytes]) -> list[dict]:
+    """Use Claude to OCR and extract product sales data from screenshots"""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    
+    # Prepare images for Claude
+    image_content = []
+    for i, screenshot in enumerate(screenshots):
+        base64_image = base64.standard_b64encode(screenshot).decode("utf-8")
+        image_content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64_image
+            }
+        })
+    
+    image_content.append({
+        "type": "text",
+        "text": """Analyze these TikTok Shop earnings screenshots. Extract ALL products shown with their units sold.
+
+Return a JSON array of objects with this format:
+[
+    {"product_name": "exact product name as shown", "units_sold": number},
+    ...
+]
+
+Sort by units_sold descending (highest first). Include ALL products visible, even those with 0 or 1 unit sold.
+Only return the JSON array, no other text."""
+    })
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": image_content
+        }]
+    )
+    
+    # Parse the response
+    try:
+        result_text = response.content[0].text
+        # Clean up potential markdown formatting
+        if "```json" in result_text:
+            result_text = result_text.split("```json")[1].split("```")[0]
+        elif "```" in result_text:
+            result_text = result_text.split("```")[1].split("```")[0]
+        
+        products = json.loads(result_text.strip())
+        return products
+    except (json.JSONDecodeError, IndexError) as e:
+        print(f"Error parsing Claude response: {e}")
+        return []
+
+
+def match_products_to_inventory(extracted_products: list[dict]) -> list[dict]:
+    """Match extracted product names to Chelsea's inventory using fuzzy matching"""
+    matched = []
+    used_inventory = set()
+    
+    for product in extracted_products:
+        product_name = product["product_name"].lower()
+        units = product["units_sold"]
+        
+        # Try to find a match in Chelsea's inventory
+        best_match = None
+        best_score = 0
+        
+        for inventory_item in CHELSEA_PRODUCTS:
+            if inventory_item in used_inventory:
+                continue
+                
+            inventory_lower = inventory_item.lower()
+            
+            # Check for exact match or significant overlap
+            if product_name == inventory_lower:
+                best_match = inventory_item
+                best_score = 100
+                break
+            
+            # Check if key words match
+            product_words = set(product_name.split())
+            inventory_words = set(inventory_lower.split())
+            common_words = product_words & inventory_words
+            
+            if len(common_words) >= 2:
+                score = len(common_words) / max(len(product_words), len(inventory_words))
+                if score > best_score:
+                    best_score = score
+                    best_match = inventory_item
+            
+            # Check for substring match
+            if inventory_lower in product_name or product_name in inventory_lower:
+                if best_score < 0.8:
+                    best_match = inventory_item
+                    best_score = 0.8
+        
+        if best_match and best_score >= 0.3:
+            matched.append({
+                "product": best_match,
+                "units_sold": units,
+                "in_inventory": True
+            })
+            used_inventory.add(best_match)
+        else:
+            matched.append({
+                "product": product["product_name"],
+                "units_sold": units,
+                "in_inventory": False
+            })
+    
+    return matched
+
+
+def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) -> dict:
+    """Generate the daily video lineup for all 3 accounts
+    
+    New Sample Distribution:
+    - Gymgoer1993 gets ALL new samples (up to 7 max)
+    - Dealrush93 gets overflow if more than 7 new samples
+    - Datburgershop93 gets remaining overflow
+    - Remaining slots filled with top sellers from earnings
+    """
+    
+    # Separate products Chelsea has vs doesn't have
+    available_products = [p for p in matched_products if p["in_inventory"]]
+    available_products.sort(key=lambda x: x["units_sold"], reverse=True)
+    
+    # Remove new samples from the selling products list (they'll be added separately)
+    selling_products = [p for p in available_products if p["product"] not in new_samples]
+    
+    # Distribute new samples across accounts (Gymgoer gets priority)
+    new_samples_copy = new_samples.copy()
+    account_new_samples = {
+        "Gymgoer1993": [],
+        "Dealrush93": [],
+        "Datburgershop93": []
+    }
+    
+    # Gymgoer1993 gets all new samples up to 7
+    while new_samples_copy and len(account_new_samples["Gymgoer1993"]) < 7:
+        account_new_samples["Gymgoer1993"].append(new_samples_copy.pop(0))
+    
+    # Dealrush93 gets overflow up to 7
+    while new_samples_copy and len(account_new_samples["Dealrush93"]) < 7:
+        account_new_samples["Dealrush93"].append(new_samples_copy.pop(0))
+    
+    # Datburgershop93 gets remaining overflow up to 7
+    while new_samples_copy and len(account_new_samples["Datburgershop93"]) < 7:
+        account_new_samples["Datburgershop93"].append(new_samples_copy.pop(0))
+    
+    lineup = {}
+    
+    for account_idx, account in enumerate(TIKTOK_ACCOUNTS):
+        products_needed = 7
+        selected = []
+        
+        # First, add new samples for this account
+        for sample in account_new_samples[account]:
+            selected.append({
+                "product": sample,
+                "units_sold": 0,
+                "source": "new_sample"
+            })
+        
+        # Determine start index for selling products based on account
+        # This creates variety across accounts
+        if account == "Gymgoer1993":
+            start_idx = 0  # Top sellers
+        elif account == "Dealrush93":
+            start_idx = 3  # Offset for variety
+        else:  # Datburgershop93
+            start_idx = 6  # More offset
+        
+        # Fill remaining slots with selling products
+        products_in_selected = [s["product"] for s in selected]
+        seller_idx = start_idx
+        
+        while len(selected) < products_needed and seller_idx < len(selling_products) + start_idx:
+            actual_idx = seller_idx % len(selling_products) if selling_products else 0
+            if not selling_products:
+                break
+                
+            if actual_idx < len(selling_products):
+                product = selling_products[actual_idx]["product"]
+                if product not in products_in_selected:
+                    selected.append({
+                        "product": product,
+                        "units_sold": selling_products[actual_idx]["units_sold"],
+                        "source": "selling"
+                    })
+                    products_in_selected.append(product)
+            seller_idx += 1
+        
+        # Fill any remaining slots with random rotation products
+        remaining_inventory = [p for p in CHELSEA_PRODUCTS if p not in products_in_selected and p not in new_samples]
+        random.shuffle(remaining_inventory)
+        
+        while len(selected) < products_needed and remaining_inventory:
+            product = remaining_inventory.pop()
+            selected.append({
+                "product": product,
+                "units_sold": 0,
+                "source": "rotation"
+            })
+        
+        # Generate video entries (20 per account)
+        # 6 products x 3 videos + 1 product x 2 videos = 20 videos
+        videos = []
+        for i, product_info in enumerate(selected):
+            product = product_info["product"]
+            is_new_sample = product_info["source"] == "new_sample"
+            
+            if i < 6:  # First 6 products get 3 videos each
+                videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
+                videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
+                videos.append({"product": product, "style": "MOF", "is_new_sample": is_new_sample})
+            else:  # Last product gets 2 videos
+                videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
+                videos.append({"product": product, "style": "MOF", "is_new_sample": is_new_sample})
+        
+        lineup[account] = {
+            "products": selected,
+            "videos": videos,
+            "new_sample_count": len(account_new_samples[account])
+        }
+    
+    return lineup
+
+
+def format_lineup_preview(lineup: dict, due_date: str) -> str:
+    """Format the lineup for Telegram preview"""
+    message = f"📋 *Proposed Video Lineup for {due_date}*\n\n"
+    
+    total_videos = 0
+    total_new_samples = 0
+    
+    for account in TIKTOK_ACCOUNTS:
+        data = lineup[account]
+        new_sample_count = data.get("new_sample_count", 0)
+        total_new_samples += new_sample_count
+        
+        message += f"*{account}* (20 videos"
+        if new_sample_count > 0:
+            message += f", {new_sample_count} new samples"
+        message += ")\n"
+        message += "─" * 25 + "\n"
+        
+        for i, product_info in enumerate(data["products"]):
+            if product_info["source"] == "new_sample":
+                emoji = "🆕"
+                units = "(NEW SAMPLE)"
+            elif product_info["source"] == "selling":
+                emoji = "🔥"
+                units = f"({product_info['units_sold']} sold)"
+            else:
+                emoji = "🔄"
+                units = "(rotation)"
+            
+            video_count = 3 if i < 6 else 2
+            message += f"{emoji} {product_info['product']}\n"
+            message += f"   └ {video_count} videos {units}\n"
+        
+        message += "\n"
+        total_videos += len(data["videos"])
+    
+    message += f"*Total: {total_videos} videos*\n"
+    if total_new_samples > 0:
+        message += f"*New Samples Being Tested: {total_new_samples}*\n"
+    message += "\nReply *confirm* to create in Notion, or *cancel* to abort."
+    
+    return message
+
+
+async def create_notion_entries(lineup: dict, due_date: str) -> tuple[int, int]:
+    """Create all Notion entries for the lineup"""
+    notion = NotionClient(NOTION_API_KEY)
+    
+    success = 0
+    failed = 0
+    
+    for account in TIKTOK_ACCOUNTS:
+        for video in lineup[account]["videos"]:
+            try:
+                result = await notion.create_page(
+                    product=video["product"],
+                    video_style=video["style"],
+                    account=account,
+                    due_date=due_date,
+                    is_new_sample=video.get("is_new_sample", False)
+                )
+                if result:
+                    success += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                print(f"Error creating Notion page: {e}")
+                failed += 1
+            
+            # Small delay to avoid rate limiting
+            await asyncio.sleep(0.3)
+    
+    return success, failed
+
+
+# Telegram Bot Handlers
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    await update.message.reply_text(
+        "👋 *TikTok Shop Video Automation Bot*\n\n"
+        "Send me your daily earnings screenshots from TikTok Shop.\n\n"
+        "*Commands:*\n"
+        "/start - Show this message\n"
+        "/generate - Process screenshots and generate lineup\n"
+        "/clear - Clear current screenshots\n"
+        "/status - Check how many screenshots collected\n\n"
+        "Just send screenshots, then use /generate when ready!",
+        parse_mode="Markdown"
+    )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming photos"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        user_sessions[user_id] = {"screenshots": [], "lineup": None}
+    
+    # Download the photo
+    photo = update.message.photo[-1]  # Get highest resolution
+    file = await context.bot.get_file(photo.file_id)
+    
+    photo_bytes = await file.download_as_bytearray()
+    user_sessions[user_id]["screenshots"].append(bytes(photo_bytes))
+    
+    count = len(user_sessions[user_id]["screenshots"])
+    await update.message.reply_text(
+        f"📸 Screenshot {count} received!\n\n"
+        f"Send more or use /generate when you've sent all screenshots."
+    )
+
+
+async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process screenshots and generate lineup"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions or not user_sessions[user_id]["screenshots"]:
+        await update.message.reply_text("❌ No screenshots found. Send some first!")
+        return
+    
+    await update.message.reply_text("🔄 Fetching latest products from Notion...")
+    
+    try:
+        # Fetch products dynamically from Notion
+        all_products, new_samples = await fetch_chelsea_products_from_notion()
+        
+        if not all_products:
+            # Fall back to hardcoded list if Notion fetch fails
+            all_products = FALLBACK_PRODUCTS
+            new_samples = []
+            await update.message.reply_text("⚠️ Couldn't fetch from Notion, using backup product list.")
+        else:
+            sample_msg = f"📦 Loaded {len(all_products)} products from Notion"
+            if new_samples:
+                sample_msg += f"\n🆕 Found {len(new_samples)} NEW SAMPLES to test: {', '.join(new_samples)}"
+            await update.message.reply_text(sample_msg)
+        
+        await update.message.reply_text("🔄 Processing screenshots with AI... This may take a moment.")
+        
+        # Process screenshots with Claude
+        screenshots = user_sessions[user_id]["screenshots"]
+        extracted_products = await process_screenshots_with_claude(screenshots)
+        
+        if not extracted_products:
+            await update.message.reply_text(
+                "❌ Couldn't extract products from screenshots. "
+                "Please make sure the earnings data is visible and try again."
+            )
+            return
+        
+        await update.message.reply_text(f"✅ Found {len(extracted_products)} products in earnings!")
+        
+        # Match to Chelsea's inventory
+        matched_products = match_products_to_inventory(extracted_products)
+        in_inventory = sum(1 for p in matched_products if p["in_inventory"])
+        
+        await update.message.reply_text(
+            f"📦 Matched {in_inventory} products to Chelsea's inventory.\n"
+            f"🔄 {len(matched_products) - in_inventory} will use rotation products."
+        )
+        
+        # Generate lineup with new samples
+        lineup = generate_daily_lineup(matched_products, new_samples)
+        
+        # Calculate tomorrow's date
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        # Store lineup for confirmation
+        user_sessions[user_id]["lineup"] = lineup
+        user_sessions[user_id]["due_date"] = tomorrow
+        
+        # Send preview
+        preview = format_lineup_preview(lineup, tomorrow)
+        await update.message.reply_text(preview, parse_mode="Markdown")
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error processing: {str(e)}")
+        raise e
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages (for confirm/cancel)"""
+    user_id = update.effective_user.id
+    text = update.message.text.lower().strip()
+    
+    if text == "confirm":
+        if user_id not in user_sessions or not user_sessions[user_id].get("lineup"):
+            await update.message.reply_text("❌ No lineup to confirm. Use /generate first.")
+            return
+        
+        await update.message.reply_text("🚀 Creating Notion entries... This will take about 30 seconds.")
+        
+        lineup = user_sessions[user_id]["lineup"]
+        due_date = user_sessions[user_id]["due_date"]
+        
+        success, failed = await create_notion_entries(lineup, due_date)
+        
+        await update.message.reply_text(
+            f"✅ *Done!*\n\n"
+            f"Created: {success} entries\n"
+            f"Failed: {failed} entries\n\n"
+            f"Chelsea's Notion is updated for {due_date}!",
+            parse_mode="Markdown"
+        )
+        
+        # Clear session
+        user_sessions[user_id] = {"screenshots": [], "lineup": None}
+        
+    elif text == "cancel":
+        if user_id in user_sessions:
+            user_sessions[user_id]["lineup"] = None
+        await update.message.reply_text("❌ Lineup cancelled. Send new screenshots to start over.")
+
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear current screenshots"""
+    user_id = update.effective_user.id
+    user_sessions[user_id] = {"screenshots": [], "lineup": None}
+    await update.message.reply_text("🗑️ Screenshots cleared. Ready for new ones!")
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check current status"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions:
+        count = 0
+        has_lineup = False
+    else:
+        count = len(user_sessions[user_id].get("screenshots", []))
+        has_lineup = user_sessions[user_id].get("lineup") is not None
+    
+    status = f"📊 *Current Status*\n\n"
+    status += f"Screenshots collected: {count}\n"
+    status += f"Lineup generated: {'Yes ✅' if has_lineup else 'No'}"
+    
+    await update.message.reply_text(status, parse_mode="Markdown")
+
+
+def main():
+    """Start the bot"""
+    # Create application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Add handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("generate", generate_command))
+    application.add_handler(CommandHandler("clear", clear_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Start polling
+    print("Bot is running...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
