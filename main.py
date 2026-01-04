@@ -14,7 +14,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
-NOTION_DATABASE_ID = "26d2b61d-84d1-8029-969d-d25728061db8"  # Chelsea's database
+NOTION_DATABASE_ID = "26d2b61d84d18029969dd25728061db8"  # Chelsea's database (no dashes)
 
 # This will be populated dynamically from Notion
 CHELSEA_PRODUCTS = []
@@ -285,6 +285,11 @@ class NotionClient:
                 headers=self.headers,
                 json=data
             )
+            
+            if response.status_code != 200:
+                print(f"Error creating page: {response.status_code} - {response.text}")
+                print(f"Product: {product}, Style: {video_style}, Account: {account}")
+            
             return response.status_code == 200
 
 
@@ -765,6 +770,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot"""
+    # Log configuration on startup
+    print(f"Starting TikTok Notion Bot...")
+    print(f"Database ID: {NOTION_DATABASE_ID}")
+    print(f"Notion API Key present: {bool(NOTION_API_KEY)}")
+    print(f"Anthropic API Key present: {bool(ANTHROPIC_API_KEY)}")
+    
     # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
