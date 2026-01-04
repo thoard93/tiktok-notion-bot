@@ -181,6 +181,67 @@ class NotionClient:
             "Notion-Version": "2022-06-28"
         }
     
+    async def get_entries_by_date(self, due_date: str) -> list[str]:
+        """Get all page IDs for entries with a specific due date"""
+        page_ids = []
+        async with httpx.AsyncClient() as client:
+            has_more = True
+            start_cursor = None
+            
+            while has_more:
+                body = {
+                    "page_size": 100,
+                    "filter": {
+                        "property": "Due Date",
+                        "date": {
+                            "equals": due_date
+                        }
+                    }
+                }
+                if start_cursor:
+                    body["start_cursor"] = start_cursor
+                
+                response = await client.post(
+                    f"{self.base_url}/databases/{NOTION_DATABASE_ID}/query",
+                    headers=self.headers,
+                    json=body
+                )
+                
+                if response.status_code != 200:
+                    print(f"Error querying Notion: {response.text}")
+                    break
+                
+                data = response.json()
+                for page in data.get("results", []):
+                    page_ids.append(page["id"])
+                
+                has_more = data.get("has_more", False)
+                start_cursor = data.get("next_cursor")
+        
+        return page_ids
+    
+    async def delete_page(self, page_id: str) -> bool:
+        """Archive (delete) a page"""
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{self.base_url}/pages/{page_id}",
+                headers=self.headers,
+                json={"archived": True}
+            )
+            return response.status_code == 200
+    
+    async def delete_entries_by_date(self, due_date: str) -> int:
+        """Delete all entries for a specific date, returns count deleted"""
+        page_ids = await self.get_entries_by_date(due_date)
+        deleted = 0
+        
+        for page_id in page_ids:
+            if await self.delete_page(page_id):
+                deleted += 1
+            await asyncio.sleep(0.2)  # Rate limiting
+        
+        return deleted
+    
     async def create_page(self, product: str, video_style: str, account: str, due_date: str, is_new_sample: bool = False):
         """Create a single page in the Notion database"""
         async with httpx.AsyncClient() as client:
@@ -481,9 +542,12 @@ def format_lineup_preview(lineup: dict, due_date: str) -> str:
     return message
 
 
-async def create_notion_entries(lineup: dict, due_date: str) -> tuple[int, int]:
-    """Create all Notion entries for the lineup"""
+async def create_notion_entries(lineup: dict, due_date: str) -> tuple[int, int, int]:
+    """Create all Notion entries for the lineup, replacing any existing entries for that date"""
     notion = NotionClient(NOTION_API_KEY)
+    
+    # First, delete any existing entries for this date
+    deleted = await notion.delete_entries_by_date(due_date)
     
     success = 0
     failed = 0
@@ -509,7 +573,7 @@ async def create_notion_entries(lineup: dict, due_date: str) -> tuple[int, int]:
             # Small delay to avoid rate limiting
             await asyncio.sleep(0.3)
     
-    return success, failed
+    return success, failed, deleted
 
 
 # Telegram Bot Handlers
@@ -627,20 +691,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ No lineup to confirm. Use /generate first.")
             return
         
-        await update.message.reply_text("🚀 Creating Notion entries... This will take about 30 seconds.")
+        await update.message.reply_text("🚀 Updating Notion... This will take about 30-60 seconds.")
         
         lineup = user_sessions[user_id]["lineup"]
         due_date = user_sessions[user_id]["due_date"]
         
-        success, failed = await create_notion_entries(lineup, due_date)
+        success, failed, deleted = await create_notion_entries(lineup, due_date)
         
-        await update.message.reply_text(
-            f"✅ *Done!*\n\n"
-            f"Created: {success} entries\n"
-            f"Failed: {failed} entries\n\n"
-            f"Chelsea's Notion is updated for {due_date}!",
-            parse_mode="Markdown"
-        )
+        result_msg = f"✅ *Done!*\n\n"
+        if deleted > 0:
+            result_msg += f"🗑️ Replaced: {deleted} old entries\n"
+        result_msg += f"✨ Created: {success} new entries\n"
+        if failed > 0:
+            result_msg += f"❌ Failed: {failed} entries\n"
+        result_msg += f"\nChelsea's Notion is updated for {due_date}!"
+        
+        await update.message.reply_text(result_msg, parse_mode="Markdown")
         
         # Clear session
         user_sessions[user_id] = {"screenshots": [], "lineup": None}
