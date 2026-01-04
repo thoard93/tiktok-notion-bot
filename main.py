@@ -120,6 +120,11 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             if products_schema.get("type") == "multi_select":
                 for option in products_schema.get("multi_select", {}).get("options", []):
                     all_products.add(option.get("name"))
+        else:
+            print(f"Error fetching Notion database schema: {response.status_code} - {response.text}")
+            print(f"Database ID: {NOTION_DATABASE_ID}")
+            print(f"API Key present: {bool(NOTION_API_KEY)}")
+            return [], []  # Return empty to trigger fallback
         
         # Now query the database to find which products are marked as New Sample
         has_more = True
@@ -283,6 +288,21 @@ class NotionClient:
             return response.status_code == 200
 
 
+def detect_image_type(image_bytes: bytes) -> str:
+    """Detect image MIME type from bytes"""
+    if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        return "image/png"
+    elif image_bytes[:2] == b'\xff\xd8':
+        return "image/jpeg"
+    elif image_bytes[:6] in (b'GIF87a', b'GIF89a'):
+        return "image/gif"
+    elif image_bytes[:4] == b'RIFF' and image_bytes[8:12] == b'WEBP':
+        return "image/webp"
+    else:
+        # Default to JPEG as Telegram usually sends JPEG
+        return "image/jpeg"
+
+
 async def process_screenshots_with_claude(screenshots: list[bytes], inventory_list: list[str]) -> list[dict]:
     """Use Claude to OCR and extract product sales data from screenshots, matching to inventory"""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -291,11 +311,12 @@ async def process_screenshots_with_claude(screenshots: list[bytes], inventory_li
     image_content = []
     for i, screenshot in enumerate(screenshots):
         base64_image = base64.standard_b64encode(screenshot).decode("utf-8")
+        media_type = detect_image_type(screenshot)
         image_content.append({
             "type": "image",
             "source": {
                 "type": "base64",
-                "media_type": "image/png",
+                "media_type": media_type,
                 "data": base64_image
             }
         })
