@@ -14,7 +14,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
-NOTION_DATABASE_ID = "26d2b61d84d18029969dd25728061db8"  # Chelsea's database (no dashes)
+NOTION_DATABASE_ID = "26d2b61d-84d1-8029-969d-d25728061db8"  # Chelsea's database
 
 # Notion API version that supports multi-data-source databases
 NOTION_API_VERSION = "2022-06-28"  # Will be overridden in headers
@@ -188,8 +188,6 @@ class NotionClient:
             "Content-Type": "application/json",
             "Notion-Version": "2022-06-28"
         }
-        # Data source ID for multi-source database targeting
-        self.data_source_id = "26d2b61d-84d1-81b2-ae72-000b4d514a51"
     
     async def get_entries_by_date(self, due_date: str) -> list[str]:
         """Get all page IDs for entries with a specific due date"""
