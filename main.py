@@ -14,7 +14,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
-NOTION_DATABASE_ID = "26d2b61d-84d1-81b2-ae72-000b4d514a51"  # Chelsea's data source
+NOTION_DATABASE_ID = "26d2b61d-84d1-8029-969d-d25728061db8"  # Chelsea's database
 
 # This will be populated dynamically from Notion
 CHELSEA_PRODUCTS = []
