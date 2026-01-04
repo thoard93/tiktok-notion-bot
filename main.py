@@ -222,8 +222,8 @@ class NotionClient:
             return response.status_code == 200
 
 
-async def process_screenshots_with_claude(screenshots: list[bytes]) -> list[dict]:
-    """Use Claude to OCR and extract product sales data from screenshots"""
+async def process_screenshots_with_claude(screenshots: list[bytes], inventory_list: list[str]) -> list[dict]:
+    """Use Claude to OCR and extract product sales data from screenshots, matching to inventory"""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
     # Prepare images for Claude
@@ -239,17 +239,34 @@ async def process_screenshots_with_claude(screenshots: list[bytes]) -> list[dict
             }
         })
     
+    # Create inventory list string for Claude
+    inventory_str = "\n".join(f"- {p}" for p in inventory_list)
+    
     image_content.append({
         "type": "text",
-        "text": """Analyze these TikTok Shop earnings screenshots. Extract ALL products shown with their units sold.
+        "text": f"""Analyze these TikTok Shop earnings screenshots. Extract ALL products shown with their units sold.
+
+IMPORTANT: Match each product to the closest item from this inventory list when possible. Only match if you're confident it's the same product (same brand AND same product type). Different products from the same brand should NOT match.
+
+INVENTORY LIST:
+{inventory_str}
 
 Return a JSON array of objects with this format:
 [
-    {"product_name": "exact product name as shown", "units_sold": number},
+    {{"product_name": "exact name as shown in screenshot", "units_sold": number, "inventory_match": "matching inventory item or null if no match"}},
     ...
 ]
 
-Sort by units_sold descending (highest first). Include ALL products visible, even those with 0 or 1 unit sold.
+Examples of CORRECT matching:
+- "Nooni Korean Apple Lip Tint Stain Duo" -> "Nooni Korean Apple Lip Taint" (same product)
+- "Freezball - Durable Fillable Dog Chew Bone" -> "Freezball dog chew bone" (same product)
+- "HonestChew - Free from Petroleum" -> "Honest Chew Toy" (same product)
+
+Examples of INCORRECT matching (don't do this):
+- "Color Wow Speed Dry Blow-Dry Spray" -> "Color Wow Dreamcoat" (WRONG - different products!)
+- "GNC Mega Men Sport" -> "GNC Mega Men 40+" (WRONG - different products!)
+
+Sort by units_sold descending (highest first). Include ALL products visible.
 Only return the JSON array, no other text."""
     })
     
@@ -278,60 +295,27 @@ Only return the JSON array, no other text."""
         return []
 
 
-def match_products_to_inventory(extracted_products: list[dict]) -> list[dict]:
-    """Match extracted product names to Chelsea's inventory using fuzzy matching"""
+def match_products_to_inventory(extracted_products: list[dict], inventory_list: list[str]) -> list[dict]:
+    """Use Claude's inventory matching from OCR step"""
     matched = []
-    used_inventory = set()
     
     for product in extracted_products:
-        product_name = product["product_name"].lower()
-        units = product["units_sold"]
+        inventory_match = product.get("inventory_match")
+        units = product.get("units_sold", 0)
         
-        # Try to find a match in Chelsea's inventory
-        best_match = None
-        best_score = 0
-        
-        for inventory_item in CHELSEA_PRODUCTS:
-            if inventory_item in used_inventory:
-                continue
-                
-            inventory_lower = inventory_item.lower()
-            
-            # Check for exact match or significant overlap
-            if product_name == inventory_lower:
-                best_match = inventory_item
-                best_score = 100
-                break
-            
-            # Check if key words match
-            product_words = set(product_name.split())
-            inventory_words = set(inventory_lower.split())
-            common_words = product_words & inventory_words
-            
-            if len(common_words) >= 2:
-                score = len(common_words) / max(len(product_words), len(inventory_words))
-                if score > best_score:
-                    best_score = score
-                    best_match = inventory_item
-            
-            # Check for substring match
-            if inventory_lower in product_name or product_name in inventory_lower:
-                if best_score < 0.8:
-                    best_match = inventory_item
-                    best_score = 0.8
-        
-        if best_match and best_score >= 0.3:
+        if inventory_match and inventory_match in inventory_list:
             matched.append({
-                "product": best_match,
+                "product": inventory_match,
                 "units_sold": units,
-                "in_inventory": True
+                "in_inventory": True,
+                "original_name": product.get("product_name", "")
             })
-            used_inventory.add(best_match)
         else:
             matched.append({
-                "product": product["product_name"],
+                "product": product.get("product_name", "Unknown"),
                 "units_sold": units,
-                "in_inventory": False
+                "in_inventory": False,
+                "original_name": product.get("product_name", "")
             })
     
     return matched
@@ -592,9 +576,9 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text("🔄 Processing screenshots with AI... This may take a moment.")
         
-        # Process screenshots with Claude
+        # Process screenshots with Claude (now with inventory list for smart matching)
         screenshots = user_sessions[user_id]["screenshots"]
-        extracted_products = await process_screenshots_with_claude(screenshots)
+        extracted_products = await process_screenshots_with_claude(screenshots, all_products)
         
         if not extracted_products:
             await update.message.reply_text(
@@ -605,8 +589,8 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(f"✅ Found {len(extracted_products)} products in earnings!")
         
-        # Match to Chelsea's inventory
-        matched_products = match_products_to_inventory(extracted_products)
+        # Match to Chelsea's inventory (using Claude's smart matching)
+        matched_products = match_products_to_inventory(extracted_products, all_products)
         in_inventory = sum(1 for p in matched_products if p["in_inventory"])
         
         await update.message.reply_text(
