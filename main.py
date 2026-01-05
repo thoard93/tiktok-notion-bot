@@ -190,20 +190,33 @@ class NotionClient:
         }
     
     async def get_entries_by_date(self, due_date: str) -> list[str]:
-        """Get all page IDs for entries with a specific due date"""
+        """Get all page IDs for entries with a specific due date for our TikTok accounts"""
         page_ids = []
         async with httpx.AsyncClient() as client:
             has_more = True
             start_cursor = None
             
+            # Our specific TikTok accounts to manage
+            our_accounts = ["Gymgoer1993", "Dealrush93", "Datburgershop93"]
+            
             while has_more:
                 body = {
                     "page_size": 100,
                     "filter": {
-                        "property": "Due Date",
-                        "date": {
-                            "equals": due_date
-                        }
+                        "and": [
+                            {
+                                "property": "Due Date",
+                                "date": {
+                                    "equals": due_date
+                                }
+                            },
+                            {
+                                "or": [
+                                    {"property": "TikTok Account", "select": {"equals": account}}
+                                    for account in our_accounts
+                                ]
+                            }
+                        ]
                     }
                 }
                 if start_cursor:
@@ -216,7 +229,7 @@ class NotionClient:
                 )
                 
                 if response.status_code != 200:
-                    print(f"Error querying Notion: {response.text}")
+                    print(f"Error querying Notion for deletion: {response.text}")
                     break
                 
                 data = response.json()
@@ -240,14 +253,18 @@ class NotionClient:
     
     async def delete_entries_by_date(self, due_date: str) -> int:
         """Delete all entries for a specific date, returns count deleted"""
+        print(f"Looking for entries to delete with due date: {due_date}")
         page_ids = await self.get_entries_by_date(due_date)
+        print(f"Found {len(page_ids)} entries to delete")
         deleted = 0
         
         for page_id in page_ids:
             if await self.delete_page(page_id):
                 deleted += 1
+                print(f"Deleted page {page_id}")
             await asyncio.sleep(0.2)  # Rate limiting
         
+        print(f"Successfully deleted {deleted} entries")
         return deleted
     
     async def create_page(self, product: str, video_style: str, account: str, due_date: str, is_new_sample: bool = False):
