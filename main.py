@@ -103,7 +103,7 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
     
     all_products = set()
     new_samples = set()
-    product_first_seen = {}  # Track oldest entry date for each product
+    product_oldest_due_date = {}  # Track oldest Due Date for each product
     checkbox_new_samples = set()  # Products manually marked with New Sample checkbox
     
     async with httpx.AsyncClient() as client:
@@ -131,7 +131,7 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             print(f"API Key present: {bool(NOTION_API_KEY)}")
             return [], []  # Return empty to trigger fallback
         
-        # Query ALL entries to find the oldest entry date for each product AND check New Sample checkbox
+        # Query ALL entries to find the oldest Due Date for each product AND check New Sample checkbox
         has_more = True
         start_cursor = None
         
@@ -155,10 +155,14 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             data = response.json()
             
             for page in data.get("results", []):
-                # Get the page creation date
-                created_time = page.get("created_time", "")[:10]  # YYYY-MM-DD
-                
                 props = page.get("properties", {})
+                
+                # Get the Due Date (not created_time - Due Date is when it was scheduled)
+                due_date_prop = props.get("Due Date", {})
+                due_date = None
+                if due_date_prop.get("type") == "date" and due_date_prop.get("date"):
+                    due_date = due_date_prop.get("date", {}).get("start", "")[:10]  # YYYY-MM-DD
+                
                 products_prop = props.get("Products", {})
                 
                 # Check if New Sample checkbox is checked on this entry
@@ -167,12 +171,12 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
                 if products_prop.get("type") == "multi_select":
                     for item in products_prop.get("multi_select", []):
                         product_name = item.get("name")
-                        if product_name:
-                            # Track the oldest (first) entry date for this product
-                            if product_name not in product_first_seen:
-                                product_first_seen[product_name] = created_time
-                            elif created_time < product_first_seen[product_name]:
-                                product_first_seen[product_name] = created_time
+                        if product_name and due_date:
+                            # Track the oldest Due Date for this product
+                            if product_name not in product_oldest_due_date:
+                                product_oldest_due_date[product_name] = due_date
+                            elif due_date < product_oldest_due_date[product_name]:
+                                product_oldest_due_date[product_name] = due_date
                             
                             # If checkbox is checked, mark as manual new sample
                             if new_sample_checked:
@@ -182,17 +186,17 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             start_cursor = data.get("next_cursor")
         
         # Determine which products are "new samples"
-        # Method 1: First entry was created within last 4 days (auto-expires)
+        # Method 1: Oldest Due Date is within last 4 days (auto-expires)
         today = datetime.now().date()
         four_days_ago = today - timedelta(days=4)
         
         for product in all_products:
-            if product in product_first_seen:
+            if product in product_oldest_due_date:
                 try:
-                    first_seen_date = datetime.strptime(product_first_seen[product], "%Y-%m-%d").date()
-                    if first_seen_date >= four_days_ago:
+                    oldest_date = datetime.strptime(product_oldest_due_date[product], "%Y-%m-%d").date()
+                    if oldest_date >= four_days_ago:
                         new_samples.add(product)
-                        print(f"New sample (auto): {product} (first entry: {product_first_seen[product]})")
+                        print(f"New sample (auto): {product} (oldest due date: {product_oldest_due_date[product]})")
                 except:
                     pass
         
