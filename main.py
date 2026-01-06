@@ -98,11 +98,12 @@ user_sessions = {}
 
 
 async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
-    """Fetch all unique products from Notion and identify New Sample products"""
+    """Fetch all unique products from Notion and identify New Sample products (added in last 4 days)"""
     global CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
     
     all_products = set()
     new_samples = set()
+    product_first_seen = {}  # Track oldest entry date for each product
     
     async with httpx.AsyncClient() as client:
         headers = {
@@ -129,19 +130,13 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             print(f"API Key present: {bool(NOTION_API_KEY)}")
             return [], []  # Return empty to trigger fallback
         
-        # Now query the database to find which products are marked as New Sample
+        # Query ALL entries to find the oldest entry date for each product
         has_more = True
         start_cursor = None
         
         while has_more:
             body = {
-                "page_size": 100,
-                "filter": {
-                    "property": "New Sample",
-                    "checkbox": {
-                        "equals": True
-                    }
-                }
+                "page_size": 100
             }
             if start_cursor:
                 body["start_cursor"] = start_cursor
@@ -153,24 +148,48 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             )
             
             if response.status_code != 200:
-                print(f"Error fetching from Notion: {response.text}")
+                print(f"Error querying Notion for product dates: {response.text}")
                 break
             
             data = response.json()
             
             for page in data.get("results", []):
-                props = page.get("properties", {})
+                # Get the page creation date
+                created_time = page.get("created_time", "")[:10]  # YYYY-MM-DD
                 
-                # Get products from multi-select for New Sample entries
+                props = page.get("properties", {})
                 products_prop = props.get("Products", {})
+                
                 if products_prop.get("type") == "multi_select":
                     for item in products_prop.get("multi_select", []):
                         product_name = item.get("name")
                         if product_name:
-                            new_samples.add(product_name)
+                            # Track the oldest (first) entry date for this product
+                            if product_name not in product_first_seen:
+                                product_first_seen[product_name] = created_time
+                            elif created_time < product_first_seen[product_name]:
+                                product_first_seen[product_name] = created_time
             
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
+        
+        # Determine which products are "new samples" (first seen within last 4 days)
+        today = datetime.now().date()
+        four_days_ago = today - timedelta(days=4)
+        
+        for product in all_products:
+            if product in product_first_seen:
+                try:
+                    first_seen_date = datetime.strptime(product_first_seen[product], "%Y-%m-%d").date()
+                    if first_seen_date >= four_days_ago:
+                        new_samples.add(product)
+                        print(f"New sample detected: {product} (first seen: {product_first_seen[product]})")
+                except:
+                    pass
+            else:
+                # Product exists in schema but has never been used in an entry = brand new!
+                new_samples.add(product)
+                print(f"New sample detected: {product} (never used in any entry)")
     
     CHELSEA_PRODUCTS = list(all_products)
     NEW_SAMPLE_PRODUCTS = list(new_samples)
