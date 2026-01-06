@@ -98,13 +98,11 @@ user_sessions = {}
 
 
 async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
-    """Fetch all unique products from Notion and identify New Sample products"""
+    """Fetch all unique products from Notion and identify New Sample products (via checkbox)"""
     global CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
     
     all_products = set()
-    new_samples = set()
-    product_oldest_due_date = {}  # Track oldest Due Date for each product
-    checkbox_new_samples = set()  # Products manually marked with New Sample checkbox
+    new_samples = set()  # Products with New Sample checkbox checked
     
     async with httpx.AsyncClient() as client:
         headers = {
@@ -131,13 +129,19 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             print(f"API Key present: {bool(NOTION_API_KEY)}")
             return [], []  # Return empty to trigger fallback
         
-        # Query ALL entries to find the oldest Due Date for each product AND check New Sample checkbox
+        # Query entries with New Sample checkbox checked
         has_more = True
         start_cursor = None
         
         while has_more:
             body = {
-                "page_size": 100
+                "page_size": 100,
+                "filter": {
+                    "property": "New Sample",
+                    "checkbox": {
+                        "equals": True
+                    }
+                }
             }
             if start_cursor:
                 body["start_cursor"] = start_cursor
@@ -149,62 +153,30 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             )
             
             if response.status_code != 200:
-                print(f"Error querying Notion for product dates: {response.text}")
+                print(f"Error querying Notion for new samples: {response.text}")
                 break
             
             data = response.json()
             
             for page in data.get("results", []):
                 props = page.get("properties", {})
-                
-                # Get the Due Date (not created_time - Due Date is when it was scheduled)
-                due_date_prop = props.get("Due Date", {})
-                due_date = None
-                if due_date_prop.get("type") == "date" and due_date_prop.get("date"):
-                    due_date = due_date_prop.get("date", {}).get("start", "")[:10]  # YYYY-MM-DD
-                
                 products_prop = props.get("Products", {})
-                
-                # Check if New Sample checkbox is checked on this entry
-                new_sample_checked = props.get("New Sample", {}).get("checkbox", False)
                 
                 if products_prop.get("type") == "multi_select":
                     for item in products_prop.get("multi_select", []):
                         product_name = item.get("name")
-                        if product_name and due_date:
-                            # Track the oldest Due Date for this product
-                            if product_name not in product_oldest_due_date:
-                                product_oldest_due_date[product_name] = due_date
-                            elif due_date < product_oldest_due_date[product_name]:
-                                product_oldest_due_date[product_name] = due_date
-                            
-                            # If checkbox is checked, mark as manual new sample
-                            if new_sample_checked:
-                                checkbox_new_samples.add(product_name)
+                        if product_name:
+                            new_samples.add(product_name)
+                            print(f"New sample: {product_name}")
             
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
-        
-        # Determine which products are "new samples"
-        # Method 1: Oldest Due Date is within last 4 days (auto-expires)
-        today = datetime.now().date()
-        four_days_ago = today - timedelta(days=4)
-        
-        for product in all_products:
-            if product in product_oldest_due_date:
-                try:
-                    oldest_date = datetime.strptime(product_oldest_due_date[product], "%Y-%m-%d").date()
-                    if oldest_date >= four_days_ago:
-                        new_samples.add(product)
-                        print(f"New sample (auto): {product} (oldest due date: {product_oldest_due_date[product]})")
-                except:
-                    pass
-        
-        # Method 2: Manual override - New Sample checkbox is checked on any entry
-        for product in checkbox_new_samples:
-            if product not in new_samples:
-                new_samples.add(product)
-                print(f"New sample (manual): {product} (checkbox checked)")
+    
+    CHELSEA_PRODUCTS = list(all_products)
+    NEW_SAMPLE_PRODUCTS = list(new_samples)
+    
+    print(f"Loaded {len(CHELSEA_PRODUCTS)} products, {len(NEW_SAMPLE_PRODUCTS)} are new samples")
+    return CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
     
     CHELSEA_PRODUCTS = list(all_products)
     NEW_SAMPLE_PRODUCTS = list(new_samples)
