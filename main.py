@@ -98,12 +98,13 @@ user_sessions = {}
 
 
 async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
-    """Fetch all unique products from Notion and identify New Sample products (added in last 4 days)"""
+    """Fetch all unique products from Notion and identify New Sample products"""
     global CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
     
     all_products = set()
     new_samples = set()
     product_first_seen = {}  # Track oldest entry date for each product
+    checkbox_new_samples = set()  # Products manually marked with New Sample checkbox
     
     async with httpx.AsyncClient() as client:
         headers = {
@@ -130,7 +131,7 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
             print(f"API Key present: {bool(NOTION_API_KEY)}")
             return [], []  # Return empty to trigger fallback
         
-        # Query ALL entries to find the oldest entry date for each product
+        # Query ALL entries to find the oldest entry date for each product AND check New Sample checkbox
         has_more = True
         start_cursor = None
         
@@ -160,6 +161,9 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
                 props = page.get("properties", {})
                 products_prop = props.get("Products", {})
                 
+                # Check if New Sample checkbox is checked on this entry
+                new_sample_checked = props.get("New Sample", {}).get("checkbox", False)
+                
                 if products_prop.get("type") == "multi_select":
                     for item in products_prop.get("multi_select", []):
                         product_name = item.get("name")
@@ -169,11 +173,16 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
                                 product_first_seen[product_name] = created_time
                             elif created_time < product_first_seen[product_name]:
                                 product_first_seen[product_name] = created_time
+                            
+                            # If checkbox is checked, mark as manual new sample
+                            if new_sample_checked:
+                                checkbox_new_samples.add(product_name)
             
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
         
-        # Determine which products are "new samples" (first seen within last 4 days)
+        # Determine which products are "new samples"
+        # Method 1: First entry was created within last 4 days (auto-expires)
         today = datetime.now().date()
         four_days_ago = today - timedelta(days=4)
         
@@ -183,13 +192,15 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
                     first_seen_date = datetime.strptime(product_first_seen[product], "%Y-%m-%d").date()
                     if first_seen_date >= four_days_ago:
                         new_samples.add(product)
-                        print(f"New sample detected: {product} (first seen: {product_first_seen[product]})")
+                        print(f"New sample (auto): {product} (first entry: {product_first_seen[product]})")
                 except:
                     pass
-            else:
-                # Product exists in schema but has never been used in an entry = brand new!
+        
+        # Method 2: Manual override - New Sample checkbox is checked on any entry
+        for product in checkbox_new_samples:
+            if product not in new_samples:
                 new_samples.add(product)
-                print(f"New sample detected: {product} (never used in any entry)")
+                print(f"New sample (manual): {product} (checkbox checked)")
     
     CHELSEA_PRODUCTS = list(all_products)
     NEW_SAMPLE_PRODUCTS = list(new_samples)
@@ -700,7 +711,12 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             sample_msg = f"📦 Loaded {len(all_products)} products from Notion"
             if new_samples:
-                sample_msg += f"\n🆕 Found {len(new_samples)} NEW SAMPLES to test: {', '.join(new_samples)}"
+                # Truncate list if too many new samples
+                if len(new_samples) <= 5:
+                    sample_msg += f"\n🆕 Found {len(new_samples)} NEW SAMPLES: {', '.join(new_samples)}"
+                else:
+                    shown = list(new_samples)[:5]
+                    sample_msg += f"\n🆕 Found {len(new_samples)} NEW SAMPLES including: {', '.join(shown)}..."
             await update.message.reply_text(sample_msg)
         
         await update.message.reply_text("🔄 Processing screenshots with AI... This may take a moment.")
