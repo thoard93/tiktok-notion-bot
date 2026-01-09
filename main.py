@@ -319,16 +319,16 @@ class NotionClient:
             return response.status_code == 200
 
     async def add_product_to_schema(self, product_name: str, color: str = "purple") -> bool:
-        """Add a new product to the Products multi-select options with specified color"""
+        """Check if product exists, if not it will be auto-created when we make the entry"""
         async with httpx.AsyncClient() as client:
-            # First get current schema
+            # Get current schema to check if product exists
             response = await client.get(
                 f"{self.base_url}/databases/{NOTION_DATABASE_ID}",
                 headers=self.headers
             )
             
             if response.status_code != 200:
-                print(f"Error fetching database schema: {response.text}")
+                print(f"Error fetching database schema: {response.status_code} - {response.text}")
                 return False
             
             db_data = response.json()
@@ -341,10 +341,11 @@ class NotionClient:
                 print(f"Product '{product_name}' already exists in schema")
                 return True
             
-            # Add new product with purple color
-            new_options = current_options + [{"name": product_name, "color": color}]
+            # Product doesn't exist - it will be auto-created when we make the entry
+            # But let's try to add it with our preferred color
+            new_option = {"name": product_name, "color": color}
+            new_options = current_options + [new_option]
             
-            # Update database schema
             update_data = {
                 "properties": {
                     "Products": {
@@ -355,6 +356,7 @@ class NotionClient:
                 }
             }
             
+            print(f"Adding '{product_name}' to schema with color {color}...")
             response = await client.patch(
                 f"{self.base_url}/databases/{NOTION_DATABASE_ID}",
                 headers=self.headers,
@@ -362,10 +364,12 @@ class NotionClient:
             )
             
             if response.status_code != 200:
-                print(f"Error updating schema: {response.status_code} - {response.text}")
-                return False
+                # If schema update fails, that's okay - the entry creation will auto-add it
+                print(f"Schema update failed (will auto-create): {response.status_code} - {response.text[:200]}")
+                # Return True anyway - we'll let the entry creation handle it
+                return True
             
-            print(f"Added product '{product_name}' with {color} color")
+            print(f"✓ Added product '{product_name}' with {color} color")
             return True
 
     async def create_new_sample_entry(self, product_name: str) -> bool:
@@ -403,6 +407,7 @@ class NotionClient:
                 }
             }
             
+            print(f"Creating new sample entry for '{product_name}'...")
             response = await client.post(
                 f"{self.base_url}/pages",
                 headers=self.headers,
@@ -410,9 +415,10 @@ class NotionClient:
             )
             
             if response.status_code != 200:
-                print(f"Error creating new sample entry: {response.status_code} - {response.text}")
+                print(f"Error creating new sample entry for '{product_name}': {response.status_code} - {response.text}")
                 return False
             
+            print(f"✓ Created new sample entry for '{product_name}'")
             return True
 
 
@@ -843,8 +849,10 @@ async def addsample_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notion = NotionClient(api_key=NOTION_API_KEY)
         added = 0
         failed = 0
+        failed_products = []
         
-        for product in extracted_products:
+        for i, product in enumerate(extracted_products):
+            print(f"Processing product {i+1}/{len(extracted_products)}: {product}")
             try:
                 # Add to Products schema with purple color
                 schema_result = await notion.add_product_to_schema(product, color="purple")
@@ -856,24 +864,33 @@ async def addsample_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         added += 1
                     else:
                         failed += 1
+                        failed_products.append(f"{product} (entry failed)")
                 else:
                     failed += 1
+                    failed_products.append(f"{product} (schema failed)")
                     
                 await asyncio.sleep(0.3)  # Rate limiting
                 
             except Exception as e:
                 print(f"Error adding product {product}: {e}")
+                import traceback
+                traceback.print_exc()
                 failed += 1
+                failed_products.append(f"{product} (exception: {str(e)[:50]})")
         
         # Clear session
         user_sessions[user_id] = {"screenshots": [], "lineup": None, "mode": "earnings"}
         
-        await update.message.reply_text(
-            f"✅ Done!\n\n"
-            f"Added: {added} products (purple)\n"
-            f"Failed: {failed}\n\n"
-            f"These products are now marked as New Samples and will be prioritized in your next lineup!"
-        )
+        result_msg = f"✅ Done!\n\nAdded: {added} products (purple)\nFailed: {failed}"
+        if failed_products:
+            result_msg += f"\n\nFailed products:\n" + "\n".join(f"• {p}" for p in failed_products[:5])
+            if len(failed_products) > 5:
+                result_msg += f"\n...and {len(failed_products) - 5} more"
+        
+        if added > 0:
+            result_msg += f"\n\nNew samples will be prioritized in your next lineup!"
+        
+        await update.message.reply_text(result_msg)
         
     except Exception as e:
         print(f"Error in addsample: {e}")
