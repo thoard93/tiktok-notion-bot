@@ -840,7 +840,7 @@ async def addsample_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         # Add each product to Notion
-        notion = NotionClient()
+        notion = NotionClient(api_key=NOTION_API_KEY)
         added = 0
         failed = 0
         
