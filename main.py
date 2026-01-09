@@ -318,6 +318,103 @@ class NotionClient:
             
             return response.status_code == 200
 
+    async def add_product_to_schema(self, product_name: str, color: str = "purple") -> bool:
+        """Add a new product to the Products multi-select options with specified color"""
+        async with httpx.AsyncClient() as client:
+            # First get current schema
+            response = await client.get(
+                f"{self.base_url}/databases/{NOTION_DATABASE_ID}",
+                headers=self.headers
+            )
+            
+            if response.status_code != 200:
+                print(f"Error fetching database schema: {response.text}")
+                return False
+            
+            db_data = response.json()
+            products_schema = db_data.get("properties", {}).get("Products", {})
+            current_options = products_schema.get("multi_select", {}).get("options", [])
+            
+            # Check if product already exists
+            existing_names = [opt.get("name", "").lower() for opt in current_options]
+            if product_name.lower() in existing_names:
+                print(f"Product '{product_name}' already exists in schema")
+                return True
+            
+            # Add new product with purple color
+            new_options = current_options + [{"name": product_name, "color": color}]
+            
+            # Update database schema
+            update_data = {
+                "properties": {
+                    "Products": {
+                        "multi_select": {
+                            "options": new_options
+                        }
+                    }
+                }
+            }
+            
+            response = await client.patch(
+                f"{self.base_url}/databases/{NOTION_DATABASE_ID}",
+                headers=self.headers,
+                json=update_data
+            )
+            
+            if response.status_code != 200:
+                print(f"Error updating schema: {response.status_code} - {response.text}")
+                return False
+            
+            print(f"Added product '{product_name}' with {color} color")
+            return True
+
+    async def create_new_sample_entry(self, product_name: str) -> bool:
+        """Create a placeholder entry with New Sample checkbox checked"""
+        async with httpx.AsyncClient() as client:
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            
+            data = {
+                "parent": {"database_id": NOTION_DATABASE_ID},
+                "properties": {
+                    "Amount of vids": {
+                        "title": [{"text": {"content": "1"}}]
+                    },
+                    "Creator": {
+                        "select": {"name": "Chelsea"}
+                    },
+                    "Products": {
+                        "multi_select": [{"name": product_name}]
+                    },
+                    "Video Style": {
+                        "select": {"name": "Talking"}
+                    },
+                    "TikTok Account": {
+                        "select": {"name": "Gymgoer1993"}
+                    },
+                    "Status": {
+                        "status": {"name": "Not Started"}
+                    },
+                    "Due Date": {
+                        "date": {"start": tomorrow}
+                    },
+                    "New Sample": {
+                        "checkbox": True
+                    }
+                }
+            }
+            
+            response = await client.post(
+                f"{self.base_url}/pages",
+                headers=self.headers,
+                json=data
+            )
+            
+            if response.status_code != 200:
+                print(f"Error creating new sample entry: {response.status_code} - {response.text}")
+                return False
+            
+            return True
+
 
 def detect_image_type(image_bytes: bytes) -> str:
     """Detect image MIME type from bytes"""
@@ -637,6 +734,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Commands:*\n"
         "/start - Show this message\n"
         "/generate - Process screenshots and generate lineup\n"
+        "/newsample - Add new sample products from screenshots\n"
         "/clear - Clear current screenshots\n"
         "/status - Check how many screenshots collected\n\n"
         "Just send screenshots, then use /generate when ready!",
@@ -649,8 +747,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if user_id not in user_sessions:
-        user_sessions[user_id] = {"screenshots": [], "lineup": None}
+        user_sessions[user_id] = {"screenshots": [], "lineup": None, "mode": "earnings"}
     
+    # Check if in new sample mode
+    if user_sessions[user_id].get("mode") == "newsample":
+        await process_new_sample_photo(update, context)
+        return
+    
+    # Normal earnings screenshot handling
     # Download the photo
     photo = update.message.photo[-1]  # Get highest resolution
     file = await context.bot.get_file(photo.file_id)
@@ -663,6 +767,184 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📸 Screenshot {count} received!\n\n"
         f"Send more or use /generate when you've sent all screenshots."
     )
+
+
+async def newsample_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start new sample mode - user sends screenshots of new samples to add"""
+    user_id = update.effective_user.id
+    
+    user_sessions[user_id] = {
+        "screenshots": [],
+        "lineup": None,
+        "mode": "newsample",
+        "sample_photos": []
+    }
+    
+    await update.message.reply_text(
+        "🆕 *New Sample Mode*\n\n"
+        "Send me screenshots of your new sample products from TikTok Shop.\n"
+        "I'll extract the product names, shorten them, and add them to Notion with a purple tag.\n\n"
+        "Send your screenshots, then type /addsample when ready!\n"
+        "Use /clear to cancel.",
+        parse_mode="Markdown"
+    )
+
+
+async def process_new_sample_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photos in new sample mode"""
+    user_id = update.effective_user.id
+    
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    photo_bytes = await file.download_as_bytearray()
+    
+    if "sample_photos" not in user_sessions[user_id]:
+        user_sessions[user_id]["sample_photos"] = []
+    
+    user_sessions[user_id]["sample_photos"].append(bytes(photo_bytes))
+    
+    count = len(user_sessions[user_id]["sample_photos"])
+    await update.message.reply_text(
+        f"📸 New sample screenshot {count} received!\n\n"
+        f"Send more or use /addsample when ready."
+    )
+
+
+async def addsample_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process new sample screenshots and add products to Notion"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_sessions or not user_sessions[user_id].get("sample_photos"):
+        await update.message.reply_text("❌ No sample screenshots found. Use /newsample first, then send photos.")
+        return
+    
+    await update.message.reply_text("🔄 Analyzing screenshots for product names...")
+    
+    try:
+        # Extract product names from screenshots using Claude
+        sample_photos = user_sessions[user_id]["sample_photos"]
+        extracted_products = await extract_new_sample_products(sample_photos)
+        
+        if not extracted_products:
+            await update.message.reply_text(
+                "❌ Couldn't extract product names from screenshots.\n"
+                "Make sure the product names are visible and try again."
+            )
+            return
+        
+        await update.message.reply_text(
+            f"✅ Found {len(extracted_products)} products:\n" +
+            "\n".join(f"• {p}" for p in extracted_products[:10]) +
+            ("\n..." if len(extracted_products) > 10 else "") +
+            "\n\n🔄 Adding to Notion..."
+        )
+        
+        # Add each product to Notion
+        notion = NotionClient()
+        added = 0
+        failed = 0
+        
+        for product in extracted_products:
+            try:
+                # Add to Products schema with purple color
+                schema_result = await notion.add_product_to_schema(product, color="purple")
+                
+                if schema_result:
+                    # Create entry with New Sample checkbox
+                    entry_result = await notion.create_new_sample_entry(product)
+                    if entry_result:
+                        added += 1
+                    else:
+                        failed += 1
+                else:
+                    failed += 1
+                    
+                await asyncio.sleep(0.3)  # Rate limiting
+                
+            except Exception as e:
+                print(f"Error adding product {product}: {e}")
+                failed += 1
+        
+        # Clear session
+        user_sessions[user_id] = {"screenshots": [], "lineup": None, "mode": "earnings"}
+        
+        await update.message.reply_text(
+            f"✅ Done!\n\n"
+            f"Added: {added} products (purple)\n"
+            f"Failed: {failed}\n\n"
+            f"These products are now marked as New Samples and will be prioritized in your next lineup!"
+        )
+        
+    except Exception as e:
+        print(f"Error in addsample: {e}")
+        import traceback
+        traceback.print_exc()
+        await update.message.reply_text(f"❌ Error processing samples: {str(e)}")
+
+
+async def extract_new_sample_products(photos: list[bytes]) -> list[str]:
+    """Use Claude to extract and shorten product names from new sample screenshots"""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    
+    # Prepare images for Claude
+    image_content = []
+    for screenshot in photos:
+        base64_image = base64.standard_b64encode(screenshot).decode("utf-8")
+        media_type = detect_image_type(screenshot)
+        image_content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64_image
+            }
+        })
+    
+    image_content.append({
+        "type": "text",
+        "text": """Analyze these TikTok Shop screenshots showing new sample products.
+
+Extract ALL product names visible and create SHORT, CLEAN versions for a database.
+
+Rules for shortening:
+- Remove unnecessary words like "for", "with", "and", "the", "pack of"
+- Keep brand name if recognizable (e.g., "COSRX", "Bloom", "GNC")
+- Keep key product identifier (e.g., "Vitamin C Serum", "Protein Powder")
+- Target 3-6 words max
+- Capitalize properly (Title Case)
+
+Examples:
+- "COSRX Advanced Snail 96 Mucin Power Essence 100ml" → "COSRX Snail Mucin Essence"
+- "Bloom Nutrition Super Greens Powder Digestive Health" → "Bloom Super Greens"
+- "The Original MakeUp Eraser 7-Day Set" → "MakeUp Eraser 7-Day Set"
+
+Return ONLY a JSON array of shortened product names, nothing else:
+["Product Name 1", "Product Name 2", ...]"""
+    })
+    
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2000,
+        messages=[{"role": "user", "content": image_content}]
+    )
+    
+    response_text = response.content[0].text.strip()
+    
+    # Parse JSON response
+    try:
+        # Clean up response if needed
+        if response_text.startswith("```"):
+            response_text = response_text.split("```")[1]
+            if response_text.startswith("json"):
+                response_text = response_text[4:]
+        response_text = response_text.strip()
+        
+        products = json.loads(response_text)
+        return products if isinstance(products, list) else []
+    except json.JSONDecodeError as e:
+        print(f"Error parsing Claude response: {e}")
+        print(f"Response was: {response_text}")
+        return []
 
 
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -777,8 +1059,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear current screenshots"""
     user_id = update.effective_user.id
-    user_sessions[user_id] = {"screenshots": [], "lineup": None}
-    await update.message.reply_text("🗑️ Screenshots cleared. Ready for new ones!")
+    user_sessions[user_id] = {"screenshots": [], "lineup": None, "mode": "earnings", "sample_photos": []}
+    await update.message.reply_text("🗑️ Cleared! Ready for new screenshots.")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -813,6 +1095,8 @@ def main():
     # Add handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("generate", generate_command))
+    application.add_handler(CommandHandler("newsample", newsample_command))
+    application.add_handler(CommandHandler("addsample", addsample_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
