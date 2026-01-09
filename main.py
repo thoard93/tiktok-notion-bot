@@ -319,7 +319,11 @@ class NotionClient:
             return response.status_code == 200
 
     async def add_product_to_schema(self, product_name: str, color: str = "purple") -> bool:
-        """Check if product exists, if not it will be auto-created when we make the entry"""
+        """
+        Check if product exists in schema. 
+        Note: We can't update schema via API when there are >100 options (Notion limit).
+        New products will be auto-created when we create the entry.
+        """
         async with httpx.AsyncClient() as client:
             # Get current schema to check if product exists
             response = await client.get(
@@ -329,7 +333,8 @@ class NotionClient:
             
             if response.status_code != 200:
                 print(f"Error fetching database schema: {response.status_code} - {response.text}")
-                return False
+                # Continue anyway - entry creation will handle it
+                return True
             
             db_data = response.json()
             products_schema = db_data.get("properties", {}).get("Products", {})
@@ -342,34 +347,8 @@ class NotionClient:
                 return True
             
             # Product doesn't exist - it will be auto-created when we make the entry
-            # But let's try to add it with our preferred color
-            new_option = {"name": product_name, "color": color}
-            new_options = current_options + [new_option]
-            
-            update_data = {
-                "properties": {
-                    "Products": {
-                        "multi_select": {
-                            "options": new_options
-                        }
-                    }
-                }
-            }
-            
-            print(f"Adding '{product_name}' to schema with color {color}...")
-            response = await client.patch(
-                f"{self.base_url}/databases/{NOTION_DATABASE_ID}",
-                headers=self.headers,
-                json=update_data
-            )
-            
-            if response.status_code != 200:
-                # If schema update fails, that's okay - the entry creation will auto-add it
-                print(f"Schema update failed (will auto-create): {response.status_code} - {response.text[:200]}")
-                # Return True anyway - we'll let the entry creation handle it
-                return True
-            
-            print(f"✓ Added product '{product_name}' with {color} color")
+            # (Can't update schema via API when >100 options exist - Notion limit)
+            print(f"Product '{product_name}' is new - will be auto-added when entry is created")
             return True
 
     async def create_new_sample_entry(self, product_name: str) -> bool:
@@ -881,14 +860,15 @@ async def addsample_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Clear session
         user_sessions[user_id] = {"screenshots": [], "lineup": None, "mode": "earnings"}
         
-        result_msg = f"✅ Done!\n\nAdded: {added} products (purple)\nFailed: {failed}"
+        result_msg = f"✅ Done!\n\nAdded: {added} products\nFailed: {failed}"
         if failed_products:
             result_msg += f"\n\nFailed products:\n" + "\n".join(f"• {p}" for p in failed_products[:5])
             if len(failed_products) > 5:
                 result_msg += f"\n...and {len(failed_products) - 5} more"
         
         if added > 0:
-            result_msg += f"\n\nNew samples will be prioritized in your next lineup!"
+            result_msg += f"\n\n✅ New samples marked and will be prioritized in your next lineup!"
+            result_msg += f"\n\n💡 Tip: You can manually change the color to purple in Notion if you want."
         
         await update.message.reply_text(result_msg)
         
