@@ -104,7 +104,7 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
     all_products = set()
     new_samples = set()  # Products with New Sample checkbox checked
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         headers = {
             "Authorization": f"Bearer {NOTION_API_KEY}",
             "Content-Type": "application/json",
@@ -198,7 +198,7 @@ class NotionClient:
     async def get_entries_by_date(self, due_date: str) -> list[str]:
         """Get all page IDs for entries with a specific due date for our TikTok accounts"""
         page_ids = []
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             has_more = True
             start_cursor = None
             
@@ -249,7 +249,7 @@ class NotionClient:
     
     async def delete_page(self, page_id: str) -> bool:
         """Archive (delete) a page"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.patch(
                 f"{self.base_url}/pages/{page_id}",
                 headers=self.headers,
@@ -275,7 +275,7 @@ class NotionClient:
     
     async def create_page(self, product: str, video_style: str, account: str, due_date: str, is_new_sample: bool = False):
         """Create a single page in the Notion database"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             data = {
                 "parent": {"database_id": NOTION_DATABASE_ID},
                 "properties": {
@@ -324,7 +324,7 @@ class NotionClient:
         Note: We can't update schema via API when there are >100 options (Notion limit).
         New products will be auto-created when we create the entry.
         """
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             # Get current schema to check if product exists
             response = await client.get(
                 f"{self.base_url}/databases/{NOTION_DATABASE_ID}",
@@ -353,7 +353,7 @@ class NotionClient:
 
     async def create_new_sample_entry(self, product_name: str) -> bool:
         """Create a placeholder entry with New Sample checkbox checked"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
             
             data = {
