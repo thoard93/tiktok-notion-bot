@@ -528,7 +528,8 @@ def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) 
     
     # Separate products Chelsea has vs doesn't have
     available_products = [p for p in matched_products if p["in_inventory"]]
-    available_products.sort(key=lambda x: x["units_sold"], reverse=True)
+    # Sort by units_sold, treating None as 0
+    available_products.sort(key=lambda x: x["units_sold"] if x["units_sold"] is not None else 0, reverse=True)
     
     # Remove new samples from the selling products list (they'll be added separately)
     selling_products = [p for p in available_products if p["product"] not in new_samples]
