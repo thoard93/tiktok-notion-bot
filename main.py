@@ -612,6 +612,13 @@ def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) 
         # Generate video entries (20 per account)
         # 6 products x 3 videos + 1 product x 2 videos = 20 videos
         videos = []
+        
+        # Determine MOF style based on account
+        if account == "Gymgoer1993":
+            mof_style = "Crying MOF"
+        else:  # Dealrush93 and Datburgershop93
+            mof_style = "Snapchat MOF"
+        
         for i, product_info in enumerate(selected):
             product = product_info["product"]
             is_new_sample = product_info["source"] == "new_sample"
@@ -619,10 +626,10 @@ def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) 
             if i < 6:  # First 6 products get 3 videos each
                 videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
                 videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
-                videos.append({"product": product, "style": "MOF", "is_new_sample": is_new_sample})
+                videos.append({"product": product, "style": mof_style, "is_new_sample": is_new_sample})
             else:  # Last product gets 2 videos
                 videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
-                videos.append({"product": product, "style": "MOF", "is_new_sample": is_new_sample})
+                videos.append({"product": product, "style": mof_style, "is_new_sample": is_new_sample})
         
         lineup[account] = {
             "products": selected,
