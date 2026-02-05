@@ -557,7 +557,14 @@ def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) 
     lineup = {}
     
     for account_idx, account in enumerate(TIKTOK_ACCOUNTS):
-        products_needed = 7
+        # Determine products and videos needed per account
+        if account == "Gymgoer1993":
+            products_needed = 14  # 40 videos: 13 products × 3 videos + 1 product × 1 video
+            videos_per_account = 40
+        else:  # Dealrush93 and Datburgershop93
+            products_needed = 4   # 10 videos: 3 products × 3 videos + 1 product × 1 video
+            videos_per_account = 10
+        
         selected = []
         
         # First, add new samples for this account
@@ -609,27 +616,30 @@ def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) 
                 "source": "rotation"
             })
         
-        # Generate video entries (20 per account)
-        # 6 products x 3 videos + 1 product x 2 videos = 20 videos
+        # Generate video entries per account
+        # Format: Most products get 3 videos (2 Sound Method + 1 MOF), last product gets remaining videos
         videos = []
         
         # Determine MOF style based on account
         if account == "Gymgoer1993":
             mof_style = "Crying MOF"
+            # Gymgoer: 40 videos = 13 products × 3 videos + 1 product × 1 video
+            products_with_3_videos = 13
         else:  # Dealrush93 and Datburgershop93
             mof_style = "Snapchat MOF"
+            # Others: 10 videos = 3 products × 3 videos + 1 product × 1 video
+            products_with_3_videos = 3
         
         for i, product_info in enumerate(selected):
             product = product_info["product"]
             is_new_sample = product_info["source"] == "new_sample"
             
-            if i < 6:  # First 6 products get 3 videos each
+            if i < products_with_3_videos:  # Most products get 3 videos each
                 videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
                 videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
                 videos.append({"product": product, "style": mof_style, "is_new_sample": is_new_sample})
-            else:  # Last product gets 2 videos
+            else:  # Last product gets remaining videos (1 video)
                 videos.append({"product": product, "style": "Sound Method", "is_new_sample": is_new_sample})
-                videos.append({"product": product, "style": mof_style, "is_new_sample": is_new_sample})
         
         lineup[account] = {
             "products": selected,
@@ -651,8 +661,9 @@ def format_lineup_preview(lineup: dict, due_date: str) -> str:
         data = lineup[account]
         new_sample_count = data.get("new_sample_count", 0)
         total_new_samples += new_sample_count
+        video_count = len(data["videos"])
         
-        message += f"*{account}* (20 videos"
+        message += f"*{account}* ({video_count} videos"
         if new_sample_count > 0:
             message += f", {new_sample_count} new samples"
         message += ")\n"
@@ -669,7 +680,12 @@ def format_lineup_preview(lineup: dict, due_date: str) -> str:
                 emoji = "🔄"
                 units = "(rotation)"
             
-            video_count = 3 if i < 6 else 2
+            # Determine video count for this product
+            if account == "Gymgoer1993":
+                video_count = 3 if i < 13 else 1
+            else:  # Dealrush93 and Datburgershop93
+                video_count = 3 if i < 3 else 1
+            
             message += f"{emoji} {product_info['product']}\n"
             message += f"   └ {video_count} videos {units}\n"
         
