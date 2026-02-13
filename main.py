@@ -559,8 +559,8 @@ def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) 
     for account_idx, account in enumerate(TIKTOK_ACCOUNTS):
         # Determine products and videos needed per account
         if account == "Gymgoer1993":
-            products_needed = 14  # 40 videos: 13 products × 3 videos + 1 product × 1 video
-            videos_per_account = 40
+            products_needed = 5  # 15 videos: 5 products × 3 videos each
+            videos_per_account = 15
         else:  # Dealrush93 and Datburgershop93
             products_needed = 4   # 10 videos: 3 products × 3 videos + 1 product × 1 video
             videos_per_account = 10
@@ -623,8 +623,8 @@ def generate_daily_lineup(matched_products: list[dict], new_samples: list[str]) 
         # Determine MOF style based on account
         if account == "Gymgoer1993":
             mof_style = "Crying MOF"
-            # Gymgoer: 40 videos = 13 products × 3 videos + 1 product × 1 video
-            products_with_3_videos = 13
+            # Gymgoer: 15 videos = 5 products × 3 videos each
+            products_with_3_videos = 5
         else:  # Dealrush93 and Datburgershop93
             mof_style = "Snapchat MOF"
             # Others: 10 videos = 3 products × 3 videos + 1 product × 1 video
@@ -682,9 +682,9 @@ def format_lineup_preview(lineup: dict, due_date: str) -> str:
             
             # Determine video count for this product
             if account == "Gymgoer1993":
-                video_count = 3 if i < 13 else 1
+                video_count = 3 if i < 5 else 1  # All 5 products get 3 videos
             else:  # Dealrush93 and Datburgershop93
-                video_count = 3 if i < 3 else 1
+                video_count = 3 if i < 3 else 1  # 3 products get 3 videos, last gets 1
             
             message += f"{emoji} {product_info['product']}\n"
             message += f"   └ {video_count} videos {units}\n"
