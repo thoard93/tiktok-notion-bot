@@ -177,12 +177,6 @@ async def fetch_chelsea_products_from_notion() -> tuple[list[str], list[str]]:
     
     print(f"Loaded {len(CHELSEA_PRODUCTS)} products, {len(NEW_SAMPLE_PRODUCTS)} are new samples")
     return CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
-    
-    CHELSEA_PRODUCTS = list(all_products)
-    NEW_SAMPLE_PRODUCTS = list(new_samples)
-    
-    print(f"Loaded {len(CHELSEA_PRODUCTS)} products, {len(NEW_SAMPLE_PRODUCTS)} are new samples")
-    return CHELSEA_PRODUCTS, NEW_SAMPLE_PRODUCTS
 
 
 class NotionClient:
@@ -247,6 +241,60 @@ class NotionClient:
         
         return page_ids
     
+    async def get_old_entries_for_accounts(self) -> list[str]:
+        """Get all page IDs for entries with a due date on or before today for our 3 accounts.
+        This catches all stale entries from previous days that were never cleaned up."""
+        page_ids = []
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            has_more = True
+            start_cursor = None
+            
+            our_accounts = ["Gymgoer1993", "Dealrush93", "Datburgershop93"]
+            
+            while has_more:
+                body = {
+                    "page_size": 100,
+                    "filter": {
+                        "and": [
+                            {
+                                "property": "Due Date",
+                                "date": {
+                                    "on_or_before": today
+                                }
+                            },
+                            {
+                                "or": [
+                                    {"property": "TikTok Account", "select": {"equals": account}}
+                                    for account in our_accounts
+                                ]
+                            }
+                        ]
+                    }
+                }
+                if start_cursor:
+                    body["start_cursor"] = start_cursor
+                
+                response = await client.post(
+                    f"{self.base_url}/databases/{NOTION_DATABASE_ID}/query",
+                    headers=self.headers,
+                    json=body
+                )
+                
+                if response.status_code != 200:
+                    print(f"Error querying Notion for old entries: {response.text}")
+                    break
+                
+                data = response.json()
+                for page in data.get("results", []):
+                    page_ids.append(page["id"])
+                
+                has_more = data.get("has_more", False)
+                start_cursor = data.get("next_cursor")
+        
+        return page_ids
+    
     async def delete_page(self, page_id: str) -> bool:
         """Archive (delete) a page"""
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -271,6 +319,23 @@ class NotionClient:
             await asyncio.sleep(0.2)  # Rate limiting
         
         print(f"Successfully deleted {deleted} entries")
+        return deleted
+    
+    async def delete_old_entries(self) -> int:
+        """Delete all old entries (due date on or before today) for our 3 accounts.
+        Returns the count of old entries deleted."""
+        print(f"Looking for old entries to clean up (due date on or before today)...")
+        page_ids = await self.get_old_entries_for_accounts()
+        print(f"Found {len(page_ids)} old entries to clean up")
+        deleted = 0
+        
+        for page_id in page_ids:
+            if await self.delete_page(page_id):
+                deleted += 1
+                print(f"Cleaned up old page {page_id}")
+            await asyncio.sleep(0.2)  # Rate limiting
+        
+        print(f"Successfully cleaned up {deleted} old entries")
         return deleted
     
     async def create_page(self, product: str, video_style: str, account: str, due_date: str, is_new_sample: bool = False):
@@ -418,7 +483,7 @@ def detect_image_type(image_bytes: bytes) -> str:
 
 async def process_screenshots_with_claude(screenshots: list[bytes], inventory_list: list[str]) -> list[dict]:
     """Use Claude to OCR and extract product sales data from screenshots, matching to inventory"""
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     
     # Prepare images for Claude
     image_content = []
@@ -465,7 +530,7 @@ Sort by units_sold descending (highest first). Include ALL products visible.
 Only return the JSON array, no other text."""
     })
     
-    response = client.messages.create(
+    response = await client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=4096,
         messages=[{
@@ -700,11 +765,16 @@ def format_lineup_preview(lineup: dict, due_date: str) -> str:
     return message
 
 
-async def create_notion_entries(lineup: dict, due_date: str) -> tuple[int, int, int]:
-    """Create all Notion entries for the lineup, replacing any existing entries for that date"""
+async def create_notion_entries(lineup: dict, due_date: str) -> tuple[int, int, int, int]:
+    """Create all Notion entries for the lineup, replacing any existing entries for that date.
+    Also cleans up old entries from previous days for the 3 accounts.
+    Returns (success, failed, deleted_for_date, old_cleaned_up)"""
     notion = NotionClient(NOTION_API_KEY)
     
-    # First, delete any existing entries for this date
+    # First, clean up old entries from previous days (due date on or before today)
+    old_cleaned = await notion.delete_old_entries()
+    
+    # Then, delete any existing entries for tomorrow's date (in case of re-run)
     deleted = await notion.delete_entries_by_date(due_date)
     
     success = 0
@@ -731,7 +801,7 @@ async def create_notion_entries(lineup: dict, due_date: str) -> tuple[int, int, 
             # Small delay to avoid rate limiting
             await asyncio.sleep(0.3)
     
-    return success, failed, deleted
+    return success, failed, deleted, old_cleaned
 
 
 # Telegram Bot Handlers
@@ -905,7 +975,7 @@ async def addsample_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def extract_new_sample_products(photos: list[bytes]) -> list[str]:
     """Use Claude to extract and shorten product names from new sample screenshots"""
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     
     # Prepare images for Claude
     image_content = []
@@ -943,7 +1013,7 @@ Return ONLY a JSON array of shortened product names, nothing else:
 ["Product Name 1", "Product Name 2", ...]"""
     })
     
-    response = client.messages.create(
+    response = await client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=2000,
         messages=[{"role": "user", "content": image_content}]
@@ -951,13 +1021,12 @@ Return ONLY a JSON array of shortened product names, nothing else:
     
     response_text = response.content[0].text.strip()
     
-    # Parse JSON response
+    # Parse JSON response (same pattern as process_screenshots_with_claude)
     try:
-        # Clean up response if needed
-        if response_text.startswith("```"):
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0]
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0]
         response_text = response_text.strip()
         
         products = json.loads(response_text)
@@ -1056,11 +1125,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lineup = user_sessions[user_id]["lineup"]
         due_date = user_sessions[user_id]["due_date"]
         
-        success, failed, deleted = await create_notion_entries(lineup, due_date)
+        success, failed, deleted, old_cleaned = await create_notion_entries(lineup, due_date)
         
         result_msg = f"✅ *Done!*\n\n"
+        if old_cleaned > 0:
+            result_msg += f"🧹 Cleaned up: {old_cleaned} old entries from previous days\n"
         if deleted > 0:
-            result_msg += f"🗑️ Replaced: {deleted} old entries\n"
+            result_msg += f"🗑️ Replaced: {deleted} entries for {due_date}\n"
         result_msg += f"✨ Created: {success} new entries\n"
         if failed > 0:
             result_msg += f"❌ Failed: {failed} entries\n"
