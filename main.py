@@ -4,8 +4,8 @@ import asyncio
 import base64
 import httpx
 from datetime import datetime, timedelta
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import anthropic
 import random
 
@@ -810,12 +810,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *TikTok Shop Video Automation Bot*\n\n"
         "Send me your daily earnings screenshots from TikTok Shop.\n\n"
-        "*Commands:*\n"
+        "*Video Lineup Commands:*\n"
         "/start - Show this message\n"
         "/generate - Process screenshots and generate lineup\n"
         "/newsample - Add new sample products from screenshots\n"
         "/clear - Clear current screenshots\n"
         "/status - Check how many screenshots collected\n\n"
+        "*Outreach Commands:*\n"
+        "/outreach - Scan Gmail for new brand outreach\n"
+        "/outreachstats - View outreach statistics\n"
+        "/setrate - Change default retainer rate\n\n"
         "Just send screenshots, then use /generate when ready!",
         parse_mode="Markdown"
     )
@@ -1111,8 +1115,13 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages (for confirm/cancel)"""
+    """Handle text messages (for confirm/cancel and custom outreach rates)"""
     user_id = update.effective_user.id
+    
+    # Check if user is inputting a custom outreach rate
+    if await handle_custom_rate_input(update, context):
+        return
+    
     text = update.message.text.lower().strip()
     
     if text == "confirm":
@@ -1173,6 +1182,203 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(status, parse_mode="Markdown")
 
 
+# =============================================================================
+# Outreach Commands & Handlers
+# =============================================================================
+
+# Global outreach scanner reference
+outreach_scanner = None
+
+
+async def outreach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually trigger an outreach scan."""
+    global outreach_scanner
+    if not outreach_scanner or not outreach_scanner.is_ready:
+        await update.message.reply_text("❌ Outreach scanner not configured. Check Gmail credentials.")
+        return
+    
+    await update.message.reply_text("📧 Scanning Gmail for new brand outreach...")
+    
+    try:
+        from outreach import send_outreach_notification
+        outreach_emails = await outreach_scanner.scan_for_outreach()
+        
+        if not outreach_emails:
+            await update.message.reply_text("✅ No new outreach found.")
+            return
+        
+        await update.message.reply_text(f"Found {len(outreach_emails)} new outreach emails! Sending details...")
+        
+        for entry in outreach_emails:
+            await send_outreach_notification(
+                context.bot, update.effective_chat.id, entry
+            )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error scanning outreach: {e}")
+        print(f"Outreach scan error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def outreachstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show outreach statistics."""
+    global outreach_scanner
+    if not outreach_scanner:
+        await update.message.reply_text("❌ Outreach scanner not configured.")
+        return
+    
+    try:
+        stats = await outreach_scanner.tracker.get_stats()
+        
+        if stats is None:
+            await update.message.reply_text("❌ Outreach Notion database not configured.")
+            return
+        
+        from outreach import DEFAULT_RETAINER_RATE
+        msg = (
+            f"📊 *Outreach Statistics*\n\n"
+            f"📧 Total outreach: {stats['total']}\n"
+            f"✅ Replied: {stats['replied']}\n"
+            f"❌ Declined: {stats['declined']}\n"
+            f"🤝 Deals closed: {stats['deals_closed']}\n"
+            f"🚨 Suspicious: {stats['suspicious']}\n\n"
+            f"💰 Current rate: ${outreach_scanner.responder.default_rate} for "
+            f"{outreach_scanner.responder.default_videos} videos"
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error fetching stats: {e}")
+
+
+async def setrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Change the default retainer rate. Usage: /setrate 600"""
+    global outreach_scanner
+    if not outreach_scanner:
+        await update.message.reply_text("❌ Outreach scanner not configured.")
+        return
+    
+    if not context.args or not context.args[0].isdigit():
+        current = outreach_scanner.responder.default_rate
+        await update.message.reply_text(
+            f"💰 Current rate: ${current} for {outreach_scanner.responder.default_videos} videos\n\n"
+            f"Usage: /setrate 600"
+        )
+        return
+    
+    new_rate = int(context.args[0])
+    outreach_scanner.responder.default_rate = new_rate
+    await update.message.reply_text(
+        f"✅ Default retainer rate updated to *${new_rate}* for "
+        f"{outreach_scanner.responder.default_videos} videos",
+        parse_mode="Markdown"
+    )
+
+
+# Store users waiting to input a custom rate
+custom_rate_pending = {}
+
+
+async def outreach_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button callbacks for outreach approval."""
+    global outreach_scanner
+    query = update.callback_query
+    await query.answer()
+    
+    if not outreach_scanner:
+        await query.edit_message_text("❌ Outreach scanner not configured.")
+        return
+    
+    data = query.data
+    
+    if data.startswith("outreach_approve_"):
+        outreach_id = data.replace("outreach_approve_", "")
+        success, msg = await outreach_scanner.approve_and_reply(outreach_id)
+        emoji = "✅" if success else "❌"
+        await query.edit_message_text(f"{emoji} {msg}")
+    
+    elif data.startswith("outreach_custom_"):
+        outreach_id = data.replace("outreach_custom_", "")
+        user_id = update.effective_user.id
+        custom_rate_pending[user_id] = outreach_id
+        await query.edit_message_text(
+            f"💰 Enter your custom rate (just the number, e.g. 600):\n\n"
+            f"Type the amount and send it."
+        )
+    
+    elif data.startswith("outreach_skip_"):
+        outreach_id = data.replace("outreach_skip_", "")
+        success, msg = await outreach_scanner.skip_outreach(outreach_id)
+        emoji = "✅" if success else "❌"
+        await query.edit_message_text(f"{emoji} {msg}")
+    
+    elif data.startswith("outreach_scam_"):
+        outreach_id = data.replace("outreach_scam_", "")
+        success, msg = await outreach_scanner.mark_scam(outreach_id)
+        emoji = "🚫" if success else "❌"
+        await query.edit_message_text(f"{emoji} {msg}")
+
+
+async def handle_custom_rate_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if the user is inputting a custom outreach rate. Returns True if handled."""
+    global outreach_scanner
+    user_id = update.effective_user.id
+    
+    if user_id not in custom_rate_pending:
+        return False
+    
+    text = update.message.text.strip()
+    
+    if not text.replace('$', '').isdigit():
+        await update.message.reply_text("❌ Please enter a valid number (e.g. 600)")
+        return True
+    
+    rate = int(text.replace('$', ''))
+    outreach_id = custom_rate_pending.pop(user_id)
+    
+    if outreach_scanner:
+        success, msg = await outreach_scanner.approve_and_reply(outreach_id, custom_rate=rate)
+        emoji = "✅" if success else "❌"
+        await update.message.reply_text(f"{emoji} {msg}")
+    else:
+        await update.message.reply_text("❌ Outreach scanner not available.")
+    
+    return True
+
+
+async def post_init(application):
+    """Called after the application is initialized. Starts the outreach scanner."""
+    global outreach_scanner
+    
+    try:
+        from outreach import OutreachScanner, outreach_scan_loop
+        
+        scanner = OutreachScanner()
+        if scanner.initialize():
+            outreach_scanner = scanner
+            
+            # Get the chat ID for notifications
+            chat_id = TELEGRAM_CHAT_ID
+            if chat_id:
+                # Start background scanning loop
+                asyncio.create_task(
+                    outreach_scan_loop(
+                        scanner=outreach_scanner,
+                        bot=application.bot,
+                        chat_id=int(chat_id),
+                        interval_minutes=30
+                    )
+                )
+                print("📧 Outreach auto-scanner started (every 30 min)")
+            else:
+                print("⚠️ TELEGRAM_CHAT_ID not set — outreach scanner available via /outreach only")
+        else:
+            print("⚠️ Gmail not configured — outreach features disabled")
+    except ImportError as e:
+        print(f"⚠️ Outreach module not available: {e}")
+    except Exception as e:
+        print(f"⚠️ Error initializing outreach scanner: {e}")
+
+
 def main():
     """Start the bot"""
     # Log configuration on startup
@@ -1180,17 +1386,26 @@ def main():
     print(f"Database ID: {NOTION_DATABASE_ID}")
     print(f"Notion API Key present: {bool(NOTION_API_KEY)}")
     print(f"Anthropic API Key present: {bool(ANTHROPIC_API_KEY)}")
+    print(f"Gmail credentials present: {bool(os.environ.get('GMAIL_REFRESH_TOKEN'))}")
     
-    # Create application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Create application with post_init for outreach scanner
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
     
-    # Add handlers
+    # Add handlers — Video lineup
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("generate", generate_command))
     application.add_handler(CommandHandler("newsample", newsample_command))
     application.add_handler(CommandHandler("addsample", addsample_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("status", status_command))
+    
+    # Add handlers — Outreach
+    application.add_handler(CommandHandler("outreach", outreach_command))
+    application.add_handler(CommandHandler("outreachstats", outreachstats_command))
+    application.add_handler(CommandHandler("setrate", setrate_command))
+    application.add_handler(CallbackQueryHandler(outreach_callback_handler, pattern=r'^outreach_'))
+    
+    # Add handlers — Messages
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
