@@ -345,10 +345,14 @@ class OutreachResponder:
         reply = (
             f"Hi {contact},\n\n"
             f"Thanks for reaching out! I'd love to work with {brand}.\n\n"
-            f"I currently offer a retainer package: {videos} high-quality TikTok Shop videos "
+            f"Just so you know, I specialize in BOF (bottom-of-funnel) content \u2014 "
+            f"discount-based TikTok Shop videos that drive direct conversions rather than "
+            f"top-of-funnel brand awareness. My videos are built around compelling offers, "
+            f"promo codes, and urgency to get viewers to buy.\n\n"
+            f"I currently offer a retainer package: {videos} high-quality BOF TikTok Shop videos "
             f"featuring your product for a flat fee of ${rate}. All videos are optimized for "
             f"conversions and posted across my TikTok accounts.\n\n"
-            f"Want me to send over more details?\n\n"
+            f"If that sounds like a fit for your brand, let me know and I'll send over more details!\n\n"
             f"Best,\n"
             f"Thomas"
         )
