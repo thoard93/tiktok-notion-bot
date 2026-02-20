@@ -819,7 +819,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Outreach Commands:*\n"
         "/outreach - Scan Gmail for new brand outreach\n"
         "/outreachstats - View outreach statistics\n"
-        "/setrate - Change default retainer rate\n\n"
+        "/setrate - Change default retainer rate\n"
+        "/setautoapprove - Set auto-approve confidence threshold\n\n"
         "Just send screenshots, then use /generate when ready!",
         parse_mode="Markdown"
     )
@@ -1274,6 +1275,54 @@ async def setrate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def setautoapprove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set the auto-approve confidence threshold. Usage: /setautoapprove 80  (or 'off' to disable)"""
+    import outreach as outreach_module
+    
+    if not context.args:
+        current = outreach_module.AUTO_APPROVE_THRESHOLD
+        if current:
+            await update.message.reply_text(
+                f"\U0001f916 Auto-approve is *ON*\n\n"
+                f"Threshold: *{current:.0%}* confidence\n"
+                f"Emails at or above this confidence (and not suspicious) get auto-replied.\n\n"
+                f"Usage:\n"
+                f"/setautoapprove 80 \u2014 set to 80%\n"
+                f"/setautoapprove off \u2014 disable auto-approve",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                f"\U0001f916 Auto-approve is *OFF*\n\n"
+                f"All outreach requires manual Telegram approval.\n\n"
+                f"Usage: /setautoapprove 70 \u2014 auto-approve at 70%+ confidence",
+                parse_mode="Markdown"
+            )
+        return
+    
+    arg = context.args[0].lower()
+    
+    if arg in ('off', 'disable', '0'):
+        outreach_module.AUTO_APPROVE_THRESHOLD = None
+        await update.message.reply_text(
+            "\u2705 Auto-approve *disabled*. All outreach will require manual approval.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if not arg.isdigit() or int(arg) < 1 or int(arg) > 100:
+        await update.message.reply_text("\u274c Enter a number between 1-100 (percent), or 'off'")
+        return
+    
+    threshold = int(arg) / 100.0
+    outreach_module.AUTO_APPROVE_THRESHOLD = threshold
+    await update.message.reply_text(
+        f"\u2705 Auto-approve threshold set to *{int(arg)}%*\n\n"
+        f"Emails with confidence \u2265 {int(arg)}% and not suspicious will be auto-replied.",
+        parse_mode="Markdown"
+    )
+
+
 # Store users waiting to input a custom rate
 custom_rate_pending = {}
 
@@ -1403,6 +1452,7 @@ def main():
     application.add_handler(CommandHandler("outreach", outreach_command))
     application.add_handler(CommandHandler("outreachstats", outreachstats_command))
     application.add_handler(CommandHandler("setrate", setrate_command))
+    application.add_handler(CommandHandler("setautoapprove", setautoapprove_command))
     application.add_handler(CallbackQueryHandler(outreach_callback_handler, pattern=r'^outreach_'))
     
     # Add handlers — Messages

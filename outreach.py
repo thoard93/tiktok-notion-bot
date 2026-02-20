@@ -32,6 +32,10 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 DEFAULT_RETAINER_VIDEOS = 30
 DEFAULT_RETAINER_RATE = 500
 
+# Auto-approve threshold (confidence >= this AND not suspicious = auto-reply)
+# Set to None or 0 to disable auto-approval
+AUTO_APPROVE_THRESHOLD = 0.70
+
 # Label name for processed emails
 PROCESSED_LABEL = "Outreach-Processed"
 
@@ -632,15 +636,26 @@ class OutreachScanner:
 # =============================================================================
 
 async def outreach_scan_loop(scanner, bot, chat_id, interval_minutes=30):
-    """Background loop that scans for outreach every N minutes."""
-    print(f"📧 Outreach scanner starting (every {interval_minutes} min)")
+    """Background loop that scans for outreach every N minutes.
+    High-confidence, non-suspicious emails are auto-approved and replied to."""
+    print(f"Outreach scanner starting (every {interval_minutes} min)")
     
     while True:
         try:
             outreach_emails = await scanner.scan_for_outreach()
             
             for entry in outreach_emails:
-                await send_outreach_notification(bot, chat_id, entry)
+                classification = entry['classification']
+                confidence = classification.get('confidence', 0)
+                is_suspicious = classification.get('is_suspicious', False)
+                threshold = AUTO_APPROVE_THRESHOLD
+                
+                # Auto-approve if confidence is high enough and not suspicious
+                if threshold and confidence >= threshold and not is_suspicious:
+                    await auto_approve_outreach(scanner, bot, chat_id, entry)
+                else:
+                    # Send manual approval notification
+                    await send_outreach_notification(bot, chat_id, entry)
             
         except Exception as e:
             print(f"Error in outreach scan loop: {e}")
@@ -651,8 +666,54 @@ async def outreach_scan_loop(scanner, bot, chat_id, interval_minutes=30):
         await asyncio.sleep(interval_minutes * 60)
 
 
+async def auto_approve_outreach(scanner, bot, chat_id, outreach_entry):
+    """Auto-approve and reply to a high-confidence outreach email, then notify user."""
+    classification = outreach_entry['classification']
+    email_data = outreach_entry['email']
+    brand = classification.get('brand_name') or 'Unknown Brand'
+    confidence = classification.get('confidence', 0)
+    rate = scanner.responder.default_rate
+    
+    # Send the retainer offer reply automatically
+    success = scanner.responder.send_retainer_offer(email_data, classification)
+    
+    if success:
+        # Track in Notion as Replied
+        await scanner.tracker.create_deal(
+            classification=classification,
+            email_data=email_data,
+            status="Replied",
+            retainer_amount=rate
+        )
+        
+        # Send informational notification (no buttons — already handled)
+        contact = classification.get('contact_name') or 'Unknown'
+        product = classification.get('product_type') or 'Unknown'
+        sender = email_data.get('from', '')
+        summary = classification.get('offer_summary') or email_data.get('snippet', '')[:200]
+        
+        msg = (
+            f"\u2705 *Auto-Approved & Replied*\n\n"
+            f"\U0001f3f7\ufe0f *Brand:* {brand} ({product})\n"
+            f"\U0001f464 *Contact:* {contact}\n"
+            f"\U0001f4e9 *From:* {sender}\n\n"
+            f"\U0001f4dd *Summary:* {summary}\n\n"
+            f"\U0001f4b0 Sent ${rate} retainer offer ({scanner.responder.default_videos} videos)\n"
+            f"\u2705 Confidence: {confidence:.0%} legitimate"
+        )
+        
+        try:
+            await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Error sending auto-approve notification: {e}")
+    else:
+        # If reply failed, fall back to manual approval
+        print(f"Auto-reply failed for {brand}, falling back to manual approval")
+        await send_outreach_notification(bot, chat_id, outreach_entry)
+
+
 async def send_outreach_notification(bot, chat_id, outreach_entry):
-    """Send a Telegram notification with inline approval buttons."""
+    """Send a Telegram notification with inline approval buttons (for lower-confidence emails)."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
     classification = outreach_entry['classification']
