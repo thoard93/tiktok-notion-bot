@@ -36,6 +36,10 @@ DEFAULT_RETAINER_RATE = 500
 # Set to None or 0 to disable auto-approval
 AUTO_APPROVE_THRESHOLD = 0.70
 
+# Auto-skip threshold (confidence <= this = silently skip, no notification)
+# Set to None or 0 to disable auto-skipping
+AUTO_SKIP_THRESHOLD = 0.40
+
 # Label name for processed emails
 PROCESSED_LABEL = "Outreach-Processed"
 
@@ -652,13 +656,16 @@ async def outreach_scan_loop(scanner, bot, chat_id, interval_minutes=30):
                 classification = entry['classification']
                 confidence = classification.get('confidence', 0)
                 is_suspicious = classification.get('is_suspicious', False)
-                threshold = AUTO_APPROVE_THRESHOLD
                 
-                # Auto-approve if confidence is high enough and not suspicious
-                if threshold and confidence >= threshold and not is_suspicious:
+                # Tier 1: Low confidence — silently skip (no notification)
+                skip_threshold = AUTO_SKIP_THRESHOLD
+                if skip_threshold and confidence <= skip_threshold:
+                    await auto_skip_outreach(scanner, entry)
+                # Tier 2: High confidence + not suspicious — auto-approve & reply
+                elif AUTO_APPROVE_THRESHOLD and confidence >= AUTO_APPROVE_THRESHOLD and not is_suspicious:
                     await auto_approve_outreach(scanner, bot, chat_id, entry)
+                # Tier 3: Middle ground — manual approval via Telegram
                 else:
-                    # Send manual approval notification
                     await send_outreach_notification(bot, chat_id, entry)
             
         except Exception as e:
@@ -668,6 +675,26 @@ async def outreach_scan_loop(scanner, bot, chat_id, interval_minutes=30):
         
         # Wait for next scan
         await asyncio.sleep(interval_minutes * 60)
+
+
+async def auto_skip_outreach(scanner, outreach_entry):
+    """Silently skip a low-confidence outreach email. No Telegram notification."""
+    classification = outreach_entry['classification']
+    email_data = outreach_entry['email']
+    brand = classification.get('brand_name') or 'Unknown'
+    confidence = classification.get('confidence', 0)
+    is_suspicious = classification.get('is_suspicious', False)
+    
+    # Log as Scam if suspicious, otherwise Declined
+    status = "Scam" if is_suspicious else "Declined"
+    
+    await scanner.tracker.create_deal(
+        classification=classification,
+        email_data=email_data,
+        status=status
+    )
+    
+    print(f"  Auto-skipped: {brand} (confidence: {confidence:.0%}, status: {status})")
 
 
 async def auto_approve_outreach(scanner, bot, chat_id, outreach_entry):
