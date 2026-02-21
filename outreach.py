@@ -158,6 +158,7 @@ class GmailClient:
                 'to': header_dict.get('to', ''),
                 'date': header_dict.get('date', ''),
                 'message_id': header_dict.get('message-id', ''),
+                'in_reply_to': header_dict.get('in-reply-to', ''),
                 'body': body,
                 'snippet': msg.get('snippet', ''),
             }
@@ -248,6 +249,35 @@ class GmailClient:
             ).execute()
         except Exception as e:
             print(f"Error labeling email {msg_id}: {e}")
+    
+    def check_if_reply_to_us(self, thread_id):
+        """Check if we've already sent a message in this thread.
+        Returns True if we've replied (meaning this is a brand follow-up)."""
+        if not self.service:
+            return False
+        
+        try:
+            thread = self.service.users().threads().get(
+                userId='me', id=thread_id, format='metadata',
+                metadataHeaders=['From']
+            ).execute()
+            
+            messages = thread.get('messages', [])
+            
+            # Get our email address
+            profile = self.service.users().getProfile(userId='me').execute()
+            our_email = profile.get('emailAddress', '').lower()
+            
+            for msg in messages:
+                headers = msg.get('payload', {}).get('headers', [])
+                for h in headers:
+                    if h['name'].lower() == 'from' and our_email in h['value'].lower():
+                        return True
+            
+            return False
+        except Exception as e:
+            print(f"Error checking thread {thread_id}: {e}")
+            return False
 
 
 # =============================================================================
@@ -529,13 +559,23 @@ class OutreachScanner:
         
         print(f"Found {len(messages)} unread emails, classifying...")
         outreach_emails = []
+        followup_emails = []
         
         for msg_info in messages:
             msg_id = msg_info['id']
+            thread_id = msg_info.get('threadId', '')
             
             # Get full email content
             email_data = self.gmail.get_email_content(msg_id)
             if not email_data:
+                continue
+            
+            # Check if this is a reply to a thread we already responded to
+            if self.gmail.check_if_reply_to_us(thread_id):
+                # This is a brand following up on our retainer offer!
+                self.gmail.label_as_processed(msg_id)
+                followup_emails.append(email_data)
+                print(f"  Reply detected: {email_data['from'][:40]} re: {email_data['subject'][:40]}")
                 continue
             
             # Classify with Claude
@@ -559,16 +599,16 @@ class OutreachScanner:
                     'msg_id': msg_id
                 }
                 outreach_emails.append(outreach_entry)
-                print(f"  📬 Outreach from: {classification.get('brand_name', 'Unknown')} "
+                print(f"  Outreach from: {classification.get('brand_name', 'Unknown')} "
                       f"(confidence: {classification.get('confidence', 0):.0%})")
             else:
-                print(f"  ⏭️ Skipped: {email_data['subject'][:50]}...")
+                print(f"  Skipped: {email_data['subject'][:50]}...")
             
             # Small delay between API calls
             await asyncio.sleep(0.5)
         
-        print(f"Found {len(outreach_emails)} outreach emails")
-        return outreach_emails
+        print(f"Found {len(outreach_emails)} outreach emails, {len(followup_emails)} follow-ups")
+        return outreach_emails, followup_emails
     
     async def approve_and_reply(self, outreach_id, custom_rate=None):
         """Approve an outreach email and send the retainer offer."""
@@ -650,7 +690,11 @@ async def outreach_scan_loop(scanner, bot, chat_id, interval_minutes=30):
     
     while True:
         try:
-            outreach_emails = await scanner.scan_for_outreach()
+            outreach_emails, followup_emails = await scanner.scan_for_outreach()
+            
+            # Handle brand follow-up replies (they replied to our retainer offer!)
+            for followup in followup_emails:
+                await send_followup_notification(bot, chat_id, followup)
             
             for entry in outreach_emails:
                 classification = entry['classification']
@@ -741,6 +785,28 @@ async def auto_approve_outreach(scanner, bot, chat_id, outreach_entry):
         # If reply failed, fall back to manual approval
         print(f"Auto-reply failed for {brand}, falling back to manual approval")
         await send_outreach_notification(bot, chat_id, outreach_entry)
+
+
+async def send_followup_notification(bot, chat_id, email_data):
+    """Notify user when a brand replies to our retainer offer — this is a hot lead!"""
+    sender = email_data.get('from', 'Unknown')
+    subject = email_data.get('subject', '(No Subject)')
+    snippet = email_data.get('snippet', '')[:300]
+    date = email_data.get('date', 'Unknown')
+    
+    msg = (
+        f"\U0001f525 *Brand Replied to Your Offer!*\n\n"
+        f"\U0001f4e9 *From:* {sender}\n"
+        f"\U0001f4cc *Subject:* {subject}\n"
+        f"\U0001f4c5 *Date:* {date}\n\n"
+        f"\U0001f4ac *Their Reply:*\n{snippet}\n\n"
+        f"\u2757 Check your Gmail to respond!"
+    )
+    
+    try:
+        await bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Error sending followup notification: {e}")
 
 
 async def send_outreach_notification(bot, chat_id, outreach_entry):

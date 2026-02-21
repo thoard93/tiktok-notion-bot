@@ -1201,19 +1201,45 @@ async def outreach_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📧 Scanning Gmail for new brand outreach...")
     
     try:
-        from outreach import send_outreach_notification
-        outreach_emails = await outreach_scanner.scan_for_outreach()
+        from outreach import (send_outreach_notification, send_followup_notification,
+                              auto_approve_outreach, auto_skip_outreach,
+                              AUTO_APPROVE_THRESHOLD, AUTO_SKIP_THRESHOLD)
+        outreach_emails, followup_emails = await outreach_scanner.scan_for_outreach()
         
-        if not outreach_emails:
+        total = len(outreach_emails) + len(followup_emails)
+        if total == 0:
             await update.message.reply_text("✅ No new outreach found.")
             return
         
-        await update.message.reply_text(f"Found {len(outreach_emails)} new outreach emails! Sending details...")
+        parts = []
+        if outreach_emails:
+            parts.append(f"{len(outreach_emails)} new outreach")
+        if followup_emails:
+            parts.append(f"{len(followup_emails)} brand replies")
+        await update.message.reply_text(f"Found {', '.join(parts)}! Processing...")
         
-        for entry in outreach_emails:
-            await send_outreach_notification(
-                context.bot, update.effective_chat.id, entry
+        # Handle brand follow-ups
+        for followup in followup_emails:
+            await send_followup_notification(
+                context.bot, update.effective_chat.id, followup
             )
+        
+        # Handle outreach with 3-tier system
+        for entry in outreach_emails:
+            classification = entry['classification']
+            confidence = classification.get('confidence', 0)
+            is_suspicious = classification.get('is_suspicious', False)
+            
+            if AUTO_SKIP_THRESHOLD and confidence <= AUTO_SKIP_THRESHOLD:
+                await auto_skip_outreach(outreach_scanner, entry)
+            elif AUTO_APPROVE_THRESHOLD and confidence >= AUTO_APPROVE_THRESHOLD and not is_suspicious:
+                await auto_approve_outreach(
+                    outreach_scanner, context.bot, update.effective_chat.id, entry
+                )
+            else:
+                await send_outreach_notification(
+                    context.bot, update.effective_chat.id, entry
+                )
     except Exception as e:
         await update.message.reply_text(f"❌ Error scanning outreach: {e}")
         print(f"Outreach scan error: {e}")
