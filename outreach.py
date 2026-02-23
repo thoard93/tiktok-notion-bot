@@ -121,8 +121,8 @@ class GmailClient:
             return []
         
         try:
-            # Search for unread emails, excluding already-processed ones
-            query = f"is:unread -label:{PROCESSED_LABEL}"
+            # Search for unread emails from the last 14 days, excluding already-processed ones
+            query = f"is:unread -label:{PROCESSED_LABEL} newer_than:14d"
             
             results = self.service.users().messages().list(
                 userId='me', q=query, maxResults=max_results
@@ -251,15 +251,15 @@ class GmailClient:
             print(f"Error labeling email {msg_id}: {e}")
     
     def check_if_reply_to_us(self, thread_id):
-        """Check if we've already sent a message in this thread.
-        Returns True if we've replied (meaning this is a brand follow-up)."""
+        """Check if we sent a retainer offer in this thread (via the bot).
+        Only returns True if our sent message contains retainer offer keywords,
+        not just any random reply we sent manually."""
         if not self.service:
             return False
         
         try:
             thread = self.service.users().threads().get(
-                userId='me', id=thread_id, format='metadata',
-                metadataHeaders=['From']
+                userId='me', id=thread_id, format='full'
             ).execute()
             
             messages = thread.get('messages', [])
@@ -268,11 +268,27 @@ class GmailClient:
             profile = self.service.users().getProfile(userId='me').execute()
             our_email = profile.get('emailAddress', '').lower()
             
+            # Keywords that only appear in our bot-generated retainer offers
+            offer_keywords = ['retainer package', 'bof', 'bottom-of-funnel', 'flat fee']
+            
             for msg in messages:
                 headers = msg.get('payload', {}).get('headers', [])
+                from_header = ''
                 for h in headers:
-                    if h['name'].lower() == 'from' and our_email in h['value'].lower():
-                        return True
+                    if h['name'].lower() == 'from':
+                        from_header = h['value'].lower()
+                        break
+                
+                # Only check messages sent by us
+                if our_email not in from_header:
+                    continue
+                
+                # Check if the body contains our retainer offer keywords
+                body = self._extract_body(msg.get('payload', {}))
+                body_lower = body.lower()
+                
+                if any(kw in body_lower for kw in offer_keywords):
+                    return True
             
             return False
         except Exception as e:
