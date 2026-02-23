@@ -586,7 +586,15 @@ class OutreachScanner:
             if not email_data:
                 continue
             
-            # Check if this is a reply to a thread we already responded to
+            # Skip system/daemon emails (bounce-backs, delivery failures, etc.)
+            sender_lower = email_data.get('from', '').lower()
+            system_senders = ['mailer-daemon', 'postmaster', 'noreply', 'no-reply', 'notifications@']
+            if any(s in sender_lower for s in system_senders):
+                self.gmail.label_as_processed(msg_id)
+                print(f"  Skipped system email: {email_data['from'][:40]}")
+                continue
+            
+            # Check if this is a reply to a thread we already sent a retainer offer in
             if self.gmail.check_if_reply_to_us(thread_id):
                 # This is a brand following up on our retainer offer!
                 self.gmail.label_as_processed(msg_id)
